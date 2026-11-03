@@ -1,0 +1,121 @@
+Bootstrap: docker
+From: bioconductor/bioconductor:3.22
+
+%labels
+    Author Muhammed Murshid KP
+    Project ASVFlow
+    Component Statistics
+    Bioconductor 3.22
+
+%environment
+    export R_LIBS_USER=/opt/asvflow/R/library
+    export R_LIBS_SITE=/usr/local/lib/R/site-library:/usr/local/lib/R/library
+
+%post
+    set -e
+
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libcurl4-openssl-dev \
+        libssl-dev \
+        libxml2-dev \
+        libfontconfig1-dev \
+        libfreetype6-dev \
+        libpng-dev \
+        libtiff-dev \
+        libjpeg-dev \
+        libharfbuzz-dev \
+        libfribidi-dev \
+        libgsl-dev
+
+    mkdir -p /opt/asvflow/R/library
+
+    Rscript -e '
+    lib <- "/opt/asvflow/R/library"
+
+    .libPaths(c(lib, .libPaths()))
+
+    options(
+        repos = c(CRAN = "https://cloud.r-project.org"),
+        Ncpus = 2
+    )
+
+    cat("Installation library paths:\n")
+    print(.libPaths())
+
+    install.packages(
+        c(
+            "vegan",
+            "ape",
+            "picante",
+            "ggplot2",
+            "stringr"
+        ),
+        lib = lib
+    )
+
+    install.packages("BiocManager", lib = lib)
+
+    .libPaths(c(lib, .libPaths()))
+
+    BiocManager::install(
+        "phyloseq",
+        lib = lib,
+        version = "3.22",
+        ask = FALSE,
+        update = FALSE,
+        dependencies = TRUE
+    )
+
+    .libPaths(c(lib, .libPaths()))
+
+    packages <- c(
+        "vegan",
+        "phyloseq",
+        "ape",
+        "picante",
+        "ggplot2",
+        "stringr"
+    )
+
+    for (p in packages) {
+        loadNamespace(p)
+        cat(p, ":", as.character(packageVersion(p)), "\n")
+    }
+
+    cat("All statistics packages loaded successfully\n")
+    '
+
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+%test
+    Rscript -e '
+    lib <- "/opt/asvflow/R/library"
+
+    .libPaths(c(lib, .libPaths()))
+
+    cat("R:", R.version.string, "\n")
+    cat("Runtime library paths:\n")
+    print(.libPaths())
+
+    packages <- c(
+        "vegan",
+        "phyloseq",
+        "ape",
+        "picante",
+        "ggplot2",
+        "stringr"
+    )
+
+    for (p in packages) {
+        tryCatch({
+            loadNamespace(p)
+            cat(p, ":", as.character(packageVersion(p)), "\n")
+        }, error = function(e) {
+            stop("Failed to load ", p, ": ", conditionMessage(e))
+        })
+    }
+
+    cat("Statistics environment validation passed\n")
+    '
