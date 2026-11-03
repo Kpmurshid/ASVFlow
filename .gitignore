@@ -1,0 +1,51 @@
+# Singularity / Apptainer images
+*.sif
+*.sif.partial*
+*.sif.tmp
+
+# Nextflow
+.nextflow/
+.nextflow.log*
+work/
+
+# Pipeline outputs
+results/
+reports/
+output/
+
+# Input sequencing data
+data/
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.bam
+*.sam
+*.cram
+
+# Temporary files
+*.tmp
+*.temp
+*.partial
+*.bak
+*~
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
