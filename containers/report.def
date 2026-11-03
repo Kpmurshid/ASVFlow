@@ -1,0 +1,46 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+%labels
+    Author "Muhammed Murshid KP"
+    Project "ASVFlow"
+    Component "Python Reporting"
+
+%post
+    set -e
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        libfreetype6-dev \
+        libpng-dev
+
+    python -m pip install --no-cache-dir --upgrade pip
+
+    python -m pip install --no-cache-dir \
+        numpy \
+        pandas \
+        scipy \
+        matplotlib \
+        seaborn \
+        plotly \
+        jinja2 \
+        biopython
+
+    python - <<'PY'
+import importlib.metadata as m
+
+packages = [
+    "numpy", "pandas", "scipy", "matplotlib",
+    "seaborn", "plotly", "jinja2", "biopython"
+]
+
+for package in packages:
+    print(f"{package}: {m.version(package)}")
+PY
+
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+%test
+    python -c "import numpy, pandas, scipy, matplotlib, seaborn, plotly, jinja2, Bio; print('Reporting environment OK')"
