@@ -54,7 +54,7 @@ check "Cutadapt" "$RUNTIME" exec "$TOOLS/asvflow-trim.sif" cutadapt --version
 
 check "FastQC" "$RUNTIME" exec "$TOOLS/asvflow-qc.sif" fastqc --version
 
-check "MultiQC" "$RUNTIME" exec "$TOOLS/asvflow-report.sif" multiqc --version
+check "MultiQC" "$RUNTIME" exec "$TOOLS/asvflow-multiqc.sif" multiqc --version
 
 check "SeqKit" "$RUNTIME" exec "$TOOLS/asvflow-seqkit.sif" seqkit version
 
@@ -62,6 +62,16 @@ check "MAFFT" "$RUNTIME" exec "$TOOLS/asvflow-mafft.sif" mafft --version
 
 check "FastTree" "$RUNTIME" exec "$TOOLS/asvflow-fasttree.sif" \
     bash -c 'command -v FastTree || command -v fasttree'
+
+check "Python / Report" "$RUNTIME" exec "$TOOLS/asvflow-report.sif" \
+    python -c '
+import importlib.metadata as m
+import numpy, pandas, scipy, matplotlib, seaborn, plotly, jinja2, Bio
+
+for p in ["numpy", "pandas", "scipy", "matplotlib", "seaborn", "plotly", "jinja2", "biopython"]:
+    print(f"{p} {m.version(p)}", end=" | ")
+print()
+'
 
 echo
 echo "---- FASTQ integrity ----"
