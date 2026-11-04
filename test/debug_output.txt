@@ -10,4 +10,3 @@ Execution status: FAILED
 Duration: 810ms
 Results: results/debug_test
 primer_mode='paired' requires --primer_fwd and --primer_rev
-

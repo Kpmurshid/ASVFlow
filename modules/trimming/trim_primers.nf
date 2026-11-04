@@ -25,15 +25,15 @@ process TRIM_PRIMERS {
                     'b':'v', 'v':'b', 'd':'h', 'h':'d', 'n':'n']
         seq.reverse().collect { comp[it] ?: it }.join('')
     }
-    
+
     def fwd = params.primer_fwd ?: ''
     def rev = params.primer_rev ?: ''
     def rc_fwd = fwd ? rc(fwd) : ''
     def rc_rev = rev ? rc(rev) : ''
-    
+
     """
     set -euo pipefail
-    
+
     cutadapt \\
         -g ${fwd} \\
         -a ${rc_rev} \\
