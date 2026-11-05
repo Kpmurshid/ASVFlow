@@ -53,3 +53,14 @@ Thumbs.db
 # Reference databases
 databases/
 /skills/
+
+# Test outputs and validation
+test_output/
+validation_*/
+work_*/
+
+# Temporary project documentation
+*_REPORT.md
+*_SUMMARY.txt
+DESIGN_*.md.backup
+DESIGN_*.md.original

@@ -15,6 +15,12 @@ include { MAKE_SEQUENCE_TABLE       } from './modules/dada2/make_sequence_table.
 include { REMOVE_CHIMERAS           } from './modules/dada2/remove_chimeras.nf'
 include { ASSIGN_TAXONOMY           } from './modules/taxonomy/assign_taxonomy.nf'
 include { ADD_SPECIES               } from './modules/taxonomy/add_species.nf'
+include { PREPARE_INPUTS            } from './modules/community/prepare_inputs.nf'
+include { ALPHA_DIVERSITY           } from './modules/community/alpha_diversity.nf'
+include { BETA_DIVERSITY            } from './modules/community/beta_diversity.nf'
+include { TAXONOMIC_COMPOSITION     } from './modules/community/taxonomic_composition.nf'
+include { SEQUENCING_DEPTH          } from './modules/community/sequencing_depth.nf'
+include { PERMANOVA                 } from './modules/community/permanova.nf'
 
 workflow {
 
@@ -272,6 +278,78 @@ workflow {
                     ASSIGN_TAXONOMY.out.taxonomy_tsv,
                     species_ref_file
                 )
+            }
+        }
+
+        // === PART 4: COMMUNITY ANALYSIS ===
+        if (params.run_community_analysis) {
+
+            log.info "Community analysis enabled"
+
+            // Determine taxonomy input (optional for alpha/beta, required for composition)
+            def taxonomy_ch
+            def has_taxonomy = false
+            if (params.taxonomy_table) {
+                // External taxonomy table provided
+                taxonomy_ch = Channel.fromPath(params.taxonomy_table, checkIfExists: true)
+                has_taxonomy = true
+                log.info "  Using external taxonomy: ${params.taxonomy_table}"
+            } else if (params.run_taxonomy && params.taxonomy_add_species) {
+                taxonomy_ch = ADD_SPECIES.out.taxonomy_species_tsv
+                has_taxonomy = true
+                log.info "  Using species-level taxonomy"
+            } else if (params.run_taxonomy) {
+                taxonomy_ch = ASSIGN_TAXONOMY.out.taxonomy_tsv
+                has_taxonomy = true
+                log.info "  Using genus-level taxonomy"
+            } else {
+                taxonomy_ch = Channel.fromPath("$projectDir/NO_TAXONOMY", checkIfExists: false).ifEmpty(file("$projectDir/NO_TAXONOMY"))
+                log.info "  No taxonomy (composition analysis will be skipped)"
+            }
+
+            // Optional metadata
+            def metadata_ch
+            if (params.sample_metadata) {
+                metadata_ch = Channel.fromPath(params.sample_metadata, checkIfExists: true)
+                log.info "  Sample metadata: ${params.sample_metadata}"
+            } else {
+                metadata_ch = Channel.fromPath("$projectDir/NO_METADATA", checkIfExists: false).ifEmpty(file("$projectDir/NO_METADATA"))
+                log.info "  No sample metadata (PERMANOVA will be skipped)"
+            }
+
+            // Prepare inputs
+            PREPARE_INPUTS(
+                REMOVE_CHIMERAS.out.seqtab_nochim_rds,
+                REMOVE_CHIMERAS.out.seqtab_nochim_fasta,
+                taxonomy_ch,
+                metadata_ch
+            )
+
+            // Alpha diversity (always run)
+            ALPHA_DIVERSITY(PREPARE_INPUTS.out.phyloseq_rds)
+
+            // Beta diversity (always run, saves distance matrices)
+            BETA_DIVERSITY(PREPARE_INPUTS.out.phyloseq_rds)
+
+            // Taxonomic composition (only if taxonomy available)
+            if (has_taxonomy) {
+                TAXONOMIC_COMPOSITION(PREPARE_INPUTS.out.phyloseq_rds)
+            } else {
+                log.info "  Taxonomic composition skipped (no taxonomy)"
+            }
+
+            // Sequencing depth (always run)
+            SEQUENCING_DEPTH(PREPARE_INPUTS.out.phyloseq_rds)
+
+            // PERMANOVA (only if metadata provided, reuses distance matrices)
+            if (params.sample_metadata) {
+                PERMANOVA(
+                    PREPARE_INPUTS.out.phyloseq_rds,
+                    BETA_DIVERSITY.out.dist_bray,
+                    BETA_DIVERSITY.out.dist_jaccard
+                )
+            } else {
+                log.info "  PERMANOVA skipped (no metadata)"
             }
         }
     }
