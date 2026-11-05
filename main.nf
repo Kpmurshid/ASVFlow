@@ -5,6 +5,14 @@ include { FASTQC as FASTQC_TRIMMED  } from './modules/qc/fastqc.nf'
 include { MULTIQC as MULTIQC_RAW    } from './modules/qc/multiqc.nf'
 include { MULTIQC as MULTIQC_TRIMMED} from './modules/qc/multiqc.nf'
 include { TRIM_PRIMERS              } from './modules/trimming/trim_primers.nf'
+include { PLOT_QUALITY_PROFILE      } from './modules/dada2/plot_quality_profile.nf'
+include { FILTER_AND_TRIM           } from './modules/dada2/filter_and_trim.nf'
+include { LEARN_ERRORS              } from './modules/dada2/learn_errors.nf'
+include { DEREPLICATE               } from './modules/dada2/dereplicate.nf'
+include { INFER_ASVS                } from './modules/dada2/infer_asvs.nf'
+include { MERGE_PAIRS               } from './modules/dada2/merge_pairs.nf'
+include { MAKE_SEQUENCE_TABLE       } from './modules/dada2/make_sequence_table.nf'
+include { REMOVE_CHIMERAS           } from './modules/dada2/remove_chimeras.nf'
 
 workflow {
 
@@ -85,6 +93,59 @@ workflow {
         .set { ch_trimmed_qc_inputs }
 
     MULTIQC_TRIMMED('trimmed', ch_trimmed_qc_inputs)
+
+    // DADA2 ASV inference pipeline
+    if (params.run_dada2) {
+
+        // Quality profile plotting
+        ch_trimmed_reads
+            .map { sample_id, r1, r2 -> [r1, r2] }
+            .flatten()
+            .collect()
+            .set { ch_all_trimmed_files }
+
+        PLOT_QUALITY_PROFILE(ch_all_trimmed_files)
+
+        // Quality filtering and trimming
+        FILTER_AND_TRIM(ch_trimmed_reads)
+
+        // Error learning (pooled across all samples)
+        FILTER_AND_TRIM.out.filtered_reads
+            .map { sample_id, r1, r2 -> [r1, r2] }
+            .flatten()
+            .collect()
+            .set { ch_all_filtered }
+
+        LEARN_ERRORS(ch_all_filtered)
+
+        // Dereplication (per-sample)
+        DEREPLICATE(FILTER_AND_TRIM.out.filtered_reads)
+
+        // ASV inference (per-sample with error models)
+        DEREPLICATE.out.derep_reads
+            .combine(LEARN_ERRORS.out.error_models)
+            .set { ch_dada_input }
+
+        INFER_ASVS(ch_dada_input)
+
+        // Merging (per-sample, requires both dada and derep objects)
+        INFER_ASVS.out.dada_results
+            .join(DEREPLICATE.out.derep_reads)
+            .set { ch_merge_input }
+
+        MERGE_PAIRS(ch_merge_input)
+
+        // Sequence table construction (all samples)
+        MERGE_PAIRS.out.merged_reads
+            .map { sample_id, merged_rds -> merged_rds }
+            .collect()
+            .set { ch_all_merged }
+
+        MAKE_SEQUENCE_TABLE(ch_all_merged)
+
+        // Chimera removal
+        REMOVE_CHIMERAS(MAKE_SEQUENCE_TABLE.out.seqtab_rds)
+    }
 }
 
 workflow.onComplete {
