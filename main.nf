@@ -13,6 +13,8 @@ include { INFER_ASVS                } from './modules/dada2/infer_asvs.nf'
 include { MERGE_PAIRS               } from './modules/dada2/merge_pairs.nf'
 include { MAKE_SEQUENCE_TABLE       } from './modules/dada2/make_sequence_table.nf'
 include { REMOVE_CHIMERAS           } from './modules/dada2/remove_chimeras.nf'
+include { ASSIGN_TAXONOMY           } from './modules/taxonomy/assign_taxonomy.nf'
+include { ADD_SPECIES               } from './modules/taxonomy/add_species.nf'
 
 workflow {
 
@@ -145,6 +147,133 @@ workflow {
 
         // Chimera removal
         REMOVE_CHIMERAS(MAKE_SEQUENCE_TABLE.out.seqtab_rds)
+
+        // === PART 3: TAXONOMY ASSIGNMENT ===
+        if (params.run_taxonomy) {
+
+            // Resolve reference paths after CLI parameter overrides
+            def databases_dir = params.databases
+            def silva_ver = params.silva_version
+
+            // Known SILVA versions with verified DADA2 filenames
+            def known_silva_versions = [
+                '138.1': [
+                    genus: 'silva_nr99_v138.1_train_set.fa.gz',
+                    species: 'silva_species_assignment_v138.1.fa.gz'
+                ],
+                '144': [
+                    genus: 'silva_nr99_v144_toGenus_trainset.fa.gz',
+                    species: 'silva_v144_assignSpecies.fa.gz'
+                ]
+            ]
+
+            // Resolve genus reference path
+            def genus_ref_path
+            if (params.silva_genus_ref != null) {
+                genus_ref_path = params.silva_genus_ref
+            } else if (known_silva_versions.containsKey(silva_ver)) {
+                def genus_file = known_silva_versions[silva_ver]['genus']
+                genus_ref_path = "${databases_dir}/silva/${silva_ver}/${genus_file}"
+            } else {
+                error """
+                Unknown SILVA version: ${silva_ver}
+
+                Cannot determine reference filenames for SILVA v${silva_ver}.
+
+                Known versions with automatic filename resolution:
+                - 138.1
+                - 144
+
+                Please provide explicit reference paths:
+                  --silva_genus_ref <path/to/genus_reference.fa.gz>
+                  --silva_species_ref <path/to/species_reference.fa.gz>
+
+                Or use a known version:
+                  --silva_version 138.1
+                  --silva_version 144
+                """
+            }
+
+            // Validate genus reference exists
+            def genus_ref_file = file(genus_ref_path)
+            if (!genus_ref_file.exists()) {
+                def expected_file = genus_ref_path.tokenize('/')[-1]
+                error """
+                ╔════════════════════════════════════════════════════════════════════════════╗
+                ║ SILVA Reference Database Not Found                                         ║
+                ╚════════════════════════════════════════════════════════════════════════════╝
+
+                Required file not found:
+                ${genus_ref_path}
+
+                Expected filename: ${expected_file}
+                Expected location: ${databases_dir}/silva/${silva_ver}/
+
+                ASVFlow requires SILVA DADA2-formatted reference databases.
+                These files are not included in this repository.
+
+                To obtain SILVA references:
+                1. Visit: https://benjjneb.github.io/dada2/training.html
+                2. Download SILVA v${silva_ver} training sets
+                3. Place in: ${databases_dir}/silva/${silva_ver}/
+
+                To skip taxonomy assignment:
+                  --run_taxonomy false
+                """
+            }
+
+            log.info "Taxonomy assignment enabled"
+            log.info "  SILVA version: ${silva_ver}"
+            log.info "  Genus reference: ${genus_ref_path}"
+
+            // Stage 1: Assign genus-level taxonomy
+            ASSIGN_TAXONOMY(
+                REMOVE_CHIMERAS.out.seqtab_nochim_rds,
+                REMOVE_CHIMERAS.out.seqtab_nochim_fasta,
+                genus_ref_file
+            )
+
+            // Stage 2: Add species-level taxonomy (optional)
+            if (params.taxonomy_add_species) {
+
+                // Resolve species reference path
+                def species_ref_path
+                if (params.silva_species_ref != null) {
+                    species_ref_path = params.silva_species_ref
+                } else if (known_silva_versions.containsKey(silva_ver)) {
+                    def species_file = known_silva_versions[silva_ver]['species']
+                    species_ref_path = "${databases_dir}/silva/${silva_ver}/${species_file}"
+                } else {
+                    error """
+                    Unknown SILVA version: ${silva_ver}
+
+                    Species assignment requires explicit reference path for v${silva_ver}:
+                      --silva_species_ref <path/to/species_reference.fa.gz>
+
+                    Or use a known version (138.1, 144)
+                    """
+                }
+
+                // Validate species reference exists
+                def species_ref_file = file(species_ref_path)
+                if (!species_ref_file.exists()) {
+                    error """
+                    SILVA species reference not found: ${species_ref_path}
+
+                    To skip species assignment:
+                      --taxonomy_add_species false
+                    """
+                }
+
+                log.info "  Species reference: ${species_ref_path}"
+
+                ADD_SPECIES(
+                    ASSIGN_TAXONOMY.out.taxonomy_rds,
+                    ASSIGN_TAXONOMY.out.taxonomy_tsv,
+                    species_ref_file
+                )
+            }
+        }
     }
 }
 
