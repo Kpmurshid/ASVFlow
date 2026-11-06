@@ -63,7 +63,12 @@ def main():
     monitor = NextflowMonitor(project_dir=project_dir)
     st.session_state.monitor = monitor
 
-    # Sidebar: Run selector
+    # Sidebar: Logo at top (before title)
+    logo_path = Path(__file__).parent / "public" / "mkp-logo-sm.png"
+    if logo_path.exists():
+        st.sidebar.image(str(logo_path), width=100)
+
+    # Sidebar: Branding
     st.sidebar.title("ASVFlow Live")
     st.sidebar.caption("🧬 Interactive Results Explorer")
     st.sidebar.caption("**Phase 2:** Scientific Visualization")

@@ -10,8 +10,6 @@ from typing import Dict
 def render(monitor, scanner, run_info: Dict):
     """Render overview page with run status and progress"""
 
-    st.title("🧬 ASVFlow Live Dashboard")
-
     if not run_info:
         st.warning("No run selected or no runs available")
         return
