@@ -43,14 +43,19 @@ class OutputScanner:
                 'total': 0,
                 'completed': 0,
                 'cached': 0,
-                'failed': 0
+                'failed': 0,
+                'aborted': 0
             }
+
+        # Normalize exit codes to numeric, treating non-numeric as NaN
+        df['exit_numeric'] = pd.to_numeric(df['exit'], errors='coerce')
 
         summary = {
             'total': len(df),
             'completed': len(df[df['status'] == 'COMPLETED']),
             'cached': len(df[df['status'] == 'CACHED']),
-            'failed': len(df[df['exit'] != 0])
+            'aborted': len(df[df['status'] == 'ABORTED']),
+            'failed': len(df[(df['exit_numeric'] != 0) & (df['exit_numeric'].notna()) & (df['status'] != 'ABORTED')])
         }
 
         return summary

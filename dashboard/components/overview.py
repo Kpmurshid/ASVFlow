@@ -53,7 +53,7 @@ def render(monitor, scanner, run_info: Dict):
     if task_summary['total'] > 0:
         st.caption("ℹ️ Showing completed tasks only. Tasks appear after completion, not during execution.")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric(
@@ -77,6 +77,14 @@ def render(monitor, scanner, run_info: Dict):
             task_summary['failed'],
             delta=None,
             delta_color="inverse" if task_summary['failed'] > 0 else "off"
+        )
+
+    with col4:
+        st.metric(
+            "🚫 Aborted",
+            task_summary['aborted'],
+            delta=None,
+            delta_color="off"
         )
 
     # Progress bar
