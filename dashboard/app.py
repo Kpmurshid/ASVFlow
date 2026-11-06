@@ -169,80 +169,192 @@ def main():
     st.sidebar.caption(f"Project: `{project_dir.name}`")
 
     # Main content area - Home/Overview
-    st.title("🧬 ASVFlow Live Dashboard")
+    # ========== HEADER SECTION ==========
+    st.markdown("# ASVFlow Live Dashboard")
     st.caption("Interactive Pipeline Monitoring and Scientific Results Explorer")
+    st.markdown("")  # Spacing
 
-    # Run information banner
-    col1, col2, col3 = st.columns([2, 1, 1])
+    # Run information banner - Compact cards
+    col1, col2, col3 = st.columns([3, 2, 2])
 
     with col1:
-        st.info(f"**Run:** {selected_run['run_name']}")
+        st.markdown(f"""
+        <div style="background-color: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6;
+                    padding: 0.75rem 1rem; border-radius: 6px;">
+            <div style="font-size: 0.75rem; opacity: 0.7; margin-bottom: 0.25rem;">ACTIVE RUN</div>
+            <div style="font-size: 1rem; font-weight: 600;">{selected_run['run_name']}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     with col2:
         status = selected_run['status']
-        status_label = {
-            'OK': '✅ Completed',
-            'ERR': '❌ Failed',
-            '-': '⏳ Running',
-            'RUNNING': '🔄 Running'
-        }.get(status, '❓ Unknown')
-        st.info(f"**Status:** {status_label}")
+        status_colors = {
+            'OK': ('#16a34a', '#dcfce7', 'Completed'),
+            'ERR': ('#dc2626', '#fee2e2', 'Failed'),
+            '-': ('#3b82f6', '#dbeafe', 'Running'),
+            'RUNNING': ('#3b82f6', '#dbeafe', 'Running')
+        }
+        color, bg_color, label = status_colors.get(status, ('#6b7280', '#f3f4f6', 'Unknown'))
+
+        st.markdown(f"""
+        <div style="background-color: {bg_color}; border-left: 3px solid {color};
+                    padding: 0.75rem 1rem; border-radius: 6px;">
+            <div style="font-size: 0.75rem; opacity: 0.7; margin-bottom: 0.25rem;">STATUS</div>
+            <div style="font-size: 1rem; font-weight: 600; color: {color};">{label}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     with col3:
-        st.info(f"**Started:** {selected_run['timestamp']}")
+        st.markdown(f"""
+        <div style="background-color: rgba(128, 128, 128, 0.05); border-left: 3px solid rgba(128, 128, 128, 0.3);
+                    padding: 0.75rem 1rem; border-radius: 6px;">
+            <div style="font-size: 0.75rem; opacity: 0.7; margin-bottom: 0.25rem;">STARTED</div>
+            <div style="font-size: 1rem; font-weight: 600;">{selected_run['timestamp']}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    st.divider()
+    st.markdown("")  # Spacing
+    st.markdown("")  # Spacing
 
     # Render overview component
     render_overview(monitor, scanner, selected_run)
 
-    # Quick links to results
-    st.divider()
-    st.subheader("🔗 Quick Access to Results")
+    # ========== QUICK ACCESS SECTION ==========
+    st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; margin-top: 2rem; padding-bottom: 0.5rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Quick Access</div>', unsafe_allow_html=True)
+
+    st.caption("Navigate to detailed analysis pages")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
         if outputs['qc']['raw_multiqc']:
-            st.success("✅ QC Results Available")
+            st.markdown("""
+            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
+                        border-radius: 8px; padding: 1rem; text-align: center;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
+                <div style="font-weight: 600;">QC Results</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.warning("⏳ QC Results Pending")
+            st.markdown("""
+            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
+                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
+                <div style="font-weight: 600;">QC Results</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     with col2:
         if outputs['dada2']['seqtab']:
-            st.success("✅ DADA2 Complete")
+            st.markdown("""
+            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
+                        border-radius: 8px; padding: 1rem; text-align: center;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
+                <div style="font-weight: 600;">DADA2 Results</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.warning("⏳ DADA2 Processing")
+            st.markdown("""
+            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
+                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
+                <div style="font-weight: 600;">DADA2 Results</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     with col3:
         if outputs['taxonomy']['taxonomy_table']:
-            st.success("✅ Taxonomy Assigned")
+            st.markdown("""
+            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
+                        border-radius: 8px; padding: 1rem; text-align: center;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
+                <div style="font-weight: 600;">Taxonomy</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.warning("⏳ Taxonomy Pending")
+            st.markdown("""
+            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
+                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
+                <div style="font-weight: 600;">Taxonomy</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
+            </div>
+            """, unsafe_allow_html=True)
 
+    st.markdown("")  # Spacing
+
+    # Second row for additional items
     col4, col5, col6 = st.columns(3)
 
     with col4:
         if outputs['community']['alpha_diversity']:
-            st.success("✅ Community Analysis")
+            st.markdown("""
+            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
+                        border-radius: 8px; padding: 1rem; text-align: center;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
+                <div style="font-weight: 600;">Community Analysis</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.info("ℹ️ Community (Optional)")
+            st.markdown("""
+            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
+                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.5;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
+                <div style="font-weight: 600;">Community Analysis</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Optional</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     with col5:
         if outputs['reports']['execution_report']:
-            st.success("✅ Nextflow Reports")
+            st.markdown("""
+            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
+                        border-radius: 8px; padding: 1rem; text-align: center;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
+                <div style="font-weight: 600;">Nextflow Reports</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.info("ℹ️ Reports Pending")
+            st.markdown("""
+            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
+                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
+                <div style="font-weight: 600;">Nextflow Reports</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     with col6:
         if outputs['dada2']['seqtab']:
-            st.success("✅ Sample Explorer")
+            st.markdown("""
+            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
+                        border-radius: 8px; padding: 1rem; text-align: center;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
+                <div style="font-weight: 600;">Sample Explorer</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.info("ℹ️ Sample Explorer")
+            st.markdown("""
+            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
+                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
+                <div style="font-weight: 600;">Sample Explorer</div>
+                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-    # Task details table
-    st.divider()
-    st.subheader("📋 Completed Task Details")
+    st.markdown("")  # Spacing
+
+    # ========== TASK DETAILS SECTION ==========
+    st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; margin-top: 2rem; padding-bottom: 0.5rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Task Execution Details</div>', unsafe_allow_html=True)
 
     trace_df = scanner.get_execution_trace()
 
@@ -254,6 +366,20 @@ def main():
         available_cols = [col for col in display_cols if col in trace_df.columns]
 
         if available_cols:
+            # Add custom CSS for table
+            st.markdown("""
+            <style>
+            div[data-testid="stDataFrame"] {
+                border: 1px solid rgba(128, 128, 128, 0.1);
+                border-radius: 8px;
+                overflow: hidden;
+            }
+            div[data-testid="stDataFrame"] > div {
+                border-radius: 8px;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+
             st.dataframe(
                 trace_df[available_cols],
                 use_container_width=True,
@@ -265,13 +391,14 @@ def main():
         # Download button
         csv = trace_df.to_csv(index=False)
         st.download_button(
-            label="📥 Download Task Data (CSV)",
+            label="Download Task Data (CSV)",
             data=csv,
             file_name=f"asvflow_tasks_{selected_run['run_name']}.csv",
-            mime="text/csv"
+            mime="text/csv",
+            use_container_width=False
         )
     else:
-        st.info("Task execution trace not yet available. Trace file is created when pipeline begins executing tasks.")
+        st.info("⏳ Task execution trace not yet available. Trace file is created when pipeline begins executing tasks.")
 
     # Auto-refresh mechanism
     if auto_refresh:
