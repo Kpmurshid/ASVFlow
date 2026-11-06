@@ -40,11 +40,59 @@ workflow {
             log.info "═══════════════════════════════════════"
             log.info ""
 
+            // Launch dashboard asynchronously
             def proc = dashboard_cmd.execute()
-            proc.waitForOrKill(3000) // Wait max 3 seconds for startup
-
-            // Give dashboard time to initialize
-            sleep(2000)
+            
+            // Wait for launcher to complete with bounded timeout (max 20 seconds)
+            def timeout_ms = 20000
+            def start_time = System.currentTimeMillis()
+            def launcher_completed = false
+            
+            while (System.currentTimeMillis() - start_time < timeout_ms) {
+                try {
+                    def exit_val = proc.exitValue()
+                    launcher_completed = true
+                    
+                    if (exit_val != 0) {
+                        def stderr = proc.err.text
+                        log.warn "Dashboard launcher exited with code ${exit_val}"
+                        if (stderr) {
+                            log.warn "Error output: ${stderr}"
+                        }
+                        log.warn "Pipeline will continue. Start manually with: ${dashboard_cmd}"
+                        break
+                    }
+                    
+                    // Launcher succeeded, read port file and print URL
+                    def dashboard_dir = file("${params.outdir}/.asvflow_dashboard")
+                    def port_file = file("${dashboard_dir}/dashboard.port")
+                    
+                    if (port_file.exists()) {
+                        def port = port_file.text.trim()
+                        log.info ""
+                        log.info "╔════════════════════════════════════════╗"
+                        log.info "║  ASVFlow Live Dashboard                ║"
+                        log.info "║  http://localhost:${port}              ║"
+                        log.info "╚════════════════════════════════════════╝"
+                        log.info ""
+                        log.info "Dashboard is running. Pipeline execution begins now."
+                        log.info ""
+                    } else {
+                        log.warn "Dashboard launcher completed but port file not found"
+                        log.warn "Expected: ${port_file}"
+                    }
+                    break
+                    
+                } catch (IllegalThreadStateException e) {
+                    // Process still running, wait a bit
+                    sleep(500)
+                }
+            }
+            
+            if (!launcher_completed) {
+                log.warn "Dashboard startup timed out after ${timeout_ms/1000} seconds"
+                log.warn "Pipeline will continue. Check dashboard status manually."
+            }
 
         } catch (Exception e) {
             log.warn "Dashboard startup failed (pipeline will continue): ${e.message}"
@@ -391,20 +439,9 @@ workflow.onComplete {
     log.info "Results: ${params.outdir}"
 
     if (params.enable_dashboard) {
-        def dashboard_dir = file("${params.outdir}/.asvflow_dashboard")
-        def port_file = file("${dashboard_dir}/dashboard.port")
-
-        if (port_file.exists()) {
-            def port = port_file.text.trim()
-            log.info ""
-            log.info "═══════════════════════════════════════"
-            log.info "  ASVFlow Live Dashboard"
-            log.info "  http://localhost:${port}"
-            log.info "═══════════════════════════════════════"
-            log.info ""
-            log.info "Dashboard remains active for result exploration."
-            log.info "Stop with: bin/stop_dashboard.sh ${params.outdir}"
-        }
+        log.info ""
+        log.info "Dashboard remains active for result exploration."
+        log.info "Stop with: bin/stop_dashboard.sh ${params.outdir}"
     }
 
     log.info ""
