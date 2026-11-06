@@ -24,6 +24,34 @@ include { PERMANOVA                 } from './modules/community/permanova.nf'
 
 workflow {
 
+    // Launch dashboard if enabled (before pipeline execution)
+    if (params.enable_dashboard) {
+        def dashboard_script = "${projectDir}/bin/launch_dashboard.sh"
+        def dashboard_cmd = [
+            dashboard_script,
+            params.outdir,
+            params.dashboard_port.toString()
+        ].join(' ')
+
+        try {
+            log.info ""
+            log.info "═══════════════════════════════════════"
+            log.info "  Starting ASVFlow Live Dashboard"
+            log.info "═══════════════════════════════════════"
+            log.info ""
+
+            def proc = dashboard_cmd.execute()
+            proc.waitForOrKill(3000) // Wait max 3 seconds for startup
+
+            // Give dashboard time to initialize
+            sleep(2000)
+
+        } catch (Exception e) {
+            log.warn "Dashboard startup failed (pipeline will continue): ${e.message}"
+            log.warn "You can start the dashboard manually with: ${dashboard_cmd}"
+        }
+    }
+
     // Input validation
     if (!params.sample_sheet) {
         error "Missing required parameter: --sample_sheet"
@@ -159,7 +187,7 @@ workflow {
 
             // Resolve reference paths after CLI parameter overrides
             def databases_dir = params.databases
-            def silva_ver = params.silva_version
+            def silva_ver = params.silva_version.toString()
 
             // Known SILVA versions with verified DADA2 filenames
             def known_silva_versions = [
@@ -361,5 +389,23 @@ workflow.onComplete {
     log.info "Execution status: ${workflow.success ? 'SUCCESS' : 'FAILED'}"
     log.info "Duration: ${workflow.duration}"
     log.info "Results: ${params.outdir}"
+
+    if (params.enable_dashboard) {
+        def dashboard_dir = file("${params.outdir}/.asvflow_dashboard")
+        def port_file = file("${dashboard_dir}/dashboard.port")
+
+        if (port_file.exists()) {
+            def port = port_file.text.trim()
+            log.info ""
+            log.info "═══════════════════════════════════════"
+            log.info "  ASVFlow Live Dashboard"
+            log.info "  http://localhost:${port}"
+            log.info "═══════════════════════════════════════"
+            log.info ""
+            log.info "Dashboard remains active for result exploration."
+            log.info "Stop with: bin/stop_dashboard.sh ${params.outdir}"
+        }
+    }
+
     log.info ""
 }

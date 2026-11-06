@@ -14,7 +14,6 @@ echo "Test 1: Full pipeline with taxonomy and metadata"
 echo "------------------------------------------------"
 
 nextflow run main.nf \
-    -profile singularity \
     --sample_sheet test/samplesheet_synthetic.csv \
     --outdir "$OUTDIR/full" \
     --primer_mode paired \
@@ -69,7 +68,6 @@ echo "Test 2: Community analysis without taxonomy"
 echo "--------------------------------------------"
 
 nextflow run main.nf \
-    -profile singularity \
     --sample_sheet test/samplesheet_synthetic.csv \
     --outdir "$OUTDIR/no_taxonomy" \
     --primer_mode paired \
@@ -103,7 +101,6 @@ echo "Test 3: Community analysis without metadata"
 echo "--------------------------------------------"
 
 nextflow run main.nf \
-    -profile singularity \
     --sample_sheet test/samplesheet_synthetic.csv \
     --outdir "$OUTDIR/no_metadata" \
     --primer_mode paired \

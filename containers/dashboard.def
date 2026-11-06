@@ -1,0 +1,58 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+%labels
+    Author "ASVFlow Team"
+    Project "ASVFlow"
+    Component "Live Dashboard"
+    Version "1.0.0"
+
+%post
+    set -e
+
+    # Minimal system dependencies
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        curl \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Install Python packages with pinned versions
+    pip install --no-cache-dir \
+        streamlit==1.35.0 \
+        pandas==2.2.2 \
+        plotly==5.22.0 \
+        watchdog==4.0.1
+
+    # Verify installation
+    python -c "import streamlit, pandas, plotly, watchdog; print('Dashboard dependencies OK')"
+
+    # Clean up
+    apt-get clean
+
+%environment
+    export STREAMLIT_SERVER_PORT=8501
+    export STREAMLIT_SERVER_ADDRESS=127.0.0.1
+    export STREAMLIT_SERVER_HEADLESS=true
+    export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    export STREAMLIT_THEME_BASE=light
+
+%runscript
+    exec streamlit run "$@"
+
+%test
+    python --version
+    python -c "import streamlit, pandas, plotly, watchdog; print('Test passed: All packages available')"
+    streamlit --version
+
+%help
+    ASVFlow Live Dashboard Container
+
+    Usage:
+        singularity run dashboard.sif <app.py> [streamlit options]
+
+    Example:
+        singularity run -B $(pwd):$(pwd) dashboard.sif dashboard/app.py
+
+    Environment variables:
+        STREAMLIT_SERVER_PORT (default: 8501)
+        STREAMLIT_SERVER_ADDRESS (default: 127.0.0.1)
