@@ -72,6 +72,15 @@ for p in ["numpy", "pandas", "scipy", "matplotlib", "seaborn", "plotly", "jinja2
     print(f"{p} {m.version(p)}", end=" | ")
 print()
 '
+check "Dashboard" "$RUNTIME" exec "$TOOLS/asvflow-dashboard.sif" \
+    python -c '
+import importlib.metadata as m
+import streamlit, numpy, pandas, pyarrow, plotly, watchdog
+
+for p in ["streamlit", "numpy", "pandas", "pyarrow", "plotly", "watchdog"]:
+    print(f"{p} {m.version(p)}", end=" | ")
+print()
+'
 
 echo
 echo "---- FASTQ integrity ----"

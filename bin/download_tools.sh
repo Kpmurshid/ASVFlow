@@ -34,6 +34,7 @@ IMAGES=(
     "asvflow-mafft.sif|docker://quay.io/biocontainers/mafft:7.221--0"
     "asvflow-fasttree.sif|docker://quay.io/biocontainers/fasttree:2.2.0--h7b50bb2_1"
     "asvflow-stats.sif|oras://registry-1.docker.io/kpmurshid/asvflow-stats:bioc-3.22-r4.5.2"
+    "asvflow-dashboard.sif|oras://registry-1.docker.io/kpmurshid/asvflow-dashboard:streamlit-1.35.0-numpy-1.26.4-pyarrow-16.1.0"
 )
 
 SILVA_BASE="https://www.arb-silva.de/fileadmin/silva_databases/current/DADA2/1.36.0/SSU"
