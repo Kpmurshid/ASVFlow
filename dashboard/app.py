@@ -63,17 +63,117 @@ def main():
     monitor = NextflowMonitor(project_dir=project_dir)
     st.session_state.monitor = monitor
 
-    # Sidebar: Logo at top (before title)
+    # ========== SIDEBAR STYLING ==========
+    st.sidebar.markdown("""
+    <style>
+    /* Brand container */
+    [data-testid="stSidebar"] .brand-container {
+        background-color: rgba(128, 128, 128, 0.05);
+        border: 1px solid rgba(128, 128, 128, 0.1);
+        border-radius: 8px;
+        padding: 1.25rem;
+        margin-bottom: 1.5rem;
+        text-align: center;
+    }
+    [data-testid="stSidebar"] .brand-container img {
+        margin-bottom: 0.75rem;
+    }
+    .brand-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin: 0.75rem 0 0.25rem 0;
+    }
+    .brand-sub {
+        font-size: 0.875rem;
+        opacity: 0.7;
+        margin: 0;
+    }
+
+    /* Section containers */
+    [data-testid="stSidebar"] .panel-container {
+        background-color: rgba(128, 128, 128, 0.05);
+        border: 1px solid rgba(128, 128, 128, 0.1);
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+    .panel-label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        opacity: 0.6;
+        margin-bottom: 0.75rem;
+        display: block;
+    }
+
+    /* Navigation cards */
+    .nav-card {
+        background-color: rgba(128, 128, 128, 0.03);
+        border: 1px solid rgba(128, 128, 128, 0.1);
+        border-radius: 6px;
+        padding: 0.625rem 0.875rem;
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.625rem;
+    }
+    .nav-card-active {
+        background-color: rgba(59, 130, 246, 0.1);
+        border-left: 3px solid #3b82f6;
+        padding-left: calc(0.875rem - 2px);
+    }
+    .nav-card-avail {
+        border-left: 3px solid #16a34a;
+        padding-left: calc(0.875rem - 2px);
+    }
+    .nav-card-pend {
+        opacity: 0.5;
+    }
+    .nav-icon {
+        font-size: 1.125rem;
+        width: 1.5rem;
+        text-align: center;
+    }
+    .nav-text {
+        flex: 1;
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+    .nav-badge {
+        font-size: 0.75rem;
+        padding: 0.125rem 0.5rem;
+        border-radius: 10px;
+        background-color: rgba(34, 197, 94, 0.15);
+        color: #16a34a;
+    }
+
+    /* Footer */
+    [data-testid="stSidebar"] .footer-container {
+        margin-top: 1.5rem;
+        padding-top: 1rem;
+        border-top: 1px solid rgba(128, 128, 128, 0.1);
+        font-size: 0.75rem;
+        opacity: 0.6;
+        text-align: center;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ========== BRAND PANEL ==========
     logo_path = Path(__file__).parent / "public" / "mkp-logo-sm.png"
+    brand_html = '<div class="brand-container">'
     if logo_path.exists():
-        st.sidebar.image(str(logo_path), width=100)
+        import base64
+        with open(logo_path, "rb") as f:
+            logo_b64 = base64.b64encode(f.read()).decode()
+        brand_html += f'<img src="data:image/png;base64,{logo_b64}" width="120" />'
+    brand_html += '<div class="brand-title">ASVFlow Live</div>'
+    brand_html += '<div class="brand-sub">Interactive Results Explorer</div>'
+    brand_html += '</div>'
+    st.sidebar.markdown(brand_html, unsafe_allow_html=True)
 
-    # Sidebar: Branding
-    st.sidebar.title("ASVFlow Live")
-    st.sidebar.caption("🧬 Interactive Results Explorer")
-    st.sidebar.caption("**Phase 2:** Scientific Visualization")
-
-    # List available runs
+    # ========== RUN SELECTOR ==========
     available_runs = monitor.list_runs()
 
     if not available_runs:
@@ -82,69 +182,58 @@ def main():
         st.info("Run ASVFlow with `nextflow run main.nf ...` to begin monitoring.")
         return
 
-    # Format run options for selectbox
+    # Format run options
     run_options = []
     for run in available_runs:
-        status_icon = {
-            'OK': '✅',
-            'ERR': '❌',
-            '-': '⏳'
-        }.get(run['status'], '❓')
+        icon = {'OK': '✓', 'ERR': '✗', '-': '◌'}.get(run['status'], '?')
+        run_options.append(f"{icon} {run['run_name']} ({run['timestamp']})")
 
-        label = f"{status_icon} {run['run_name']} ({run['timestamp']})"
-        run_options.append(label)
-
-    # Select run (default to most recent)
+    st.sidebar.markdown('<div class="panel-container"><div class="panel-label">Run Selection</div></div>', unsafe_allow_html=True)
     selected_idx = st.sidebar.selectbox(
         "Select Run",
         range(len(run_options)),
         format_func=lambda i: run_options[i],
-        index=len(run_options) - 1  # Most recent
+        index=len(run_options) - 1,
+        label_visibility="collapsed"
     )
 
     selected_run = available_runs[selected_idx]
-
-    # Get output directory for this run
     outdir = monitor.get_run_outdir(selected_run)
     scanner = OutputScanner(outdir)
-
-    # Store in session state for access by other pages
     st.session_state.selected_run = selected_run
     st.session_state.scanner = scanner
 
-    st.sidebar.divider()
-
-    # Navigation hints
-    st.sidebar.subheader("📑 Available Pages")
+    # ========== NAVIGATION ==========
     outputs = scanner.scan_available_outputs()
-
-    pages_status = [
-        ("🏠 Overview", True),
-        ("🔬 QC Results", any(outputs['qc'].values())),
-        ("🧬 DADA2 Results", any(outputs['dada2'].values())),
-        ("🦠 Taxonomy", any(outputs['taxonomy'].values())),
-        ("📊 Community Analysis", any(outputs['community'].values())),
-        ("🔍 Sample Explorer", any(outputs['dada2'].values())),
+    pages = [
+        ("Overview", "🏠", True, True),
+        ("QC Results", "🔬", any(outputs['qc'].values()), False),
+        ("DADA2 Results", "🧬", any(outputs['dada2'].values()), False),
+        ("Taxonomy", "🦠", any(outputs['taxonomy'].values()), False),
+        ("Community Analysis", "📊", any(outputs['community'].values()), False),
+        ("Sample Explorer", "🔍", any(outputs['dada2'].values()), False),
     ]
 
-    for page_name, available in pages_status:
-        if available:
-            if page_name == "🏠 Overview":
-                st.sidebar.info(f"▶️ {page_name}")
-            else:
-                st.sidebar.success(f"✅ {page_name}")
+    nav_html = '<div class="panel-container"><div class="panel-label">Available Pages</div>'
+    for name, icon, avail, active in pages:
+        cls = "nav-card"
+        if active:
+            cls += " nav-card-active"
+        elif avail:
+            cls += " nav-card-avail"
         else:
-            st.sidebar.caption(f"⚪ {page_name} (not available)")
+            cls += " nav-card-pend"
+        badge = '<div class="nav-badge">✓</div>' if (avail and not active) else ''
+        nav_html += f'<div class="{cls}"><div class="nav-icon">{icon}</div><div class="nav-text">{name}</div>{badge}</div>'
+    nav_html += '</div>'
+    st.sidebar.markdown(nav_html, unsafe_allow_html=True)
 
-    st.sidebar.caption("*Use sidebar to navigate*")
-
-    st.sidebar.divider()
-
-    # Auto-refresh control
+    # ========== SETTINGS ==========
+    st.sidebar.markdown('<div class="panel-container"><div class="panel-label">Settings</div></div>', unsafe_allow_html=True)
     auto_refresh = st.sidebar.checkbox(
-        "Auto-refresh",
+        "Enable auto-refresh",
         value=(selected_run['status'] in ['-', 'RUNNING']),
-        help="Periodically reload run metadata and completed task data"
+        help="Periodically reload run metadata and task data"
     )
 
     if auto_refresh:
@@ -152,21 +241,22 @@ def main():
             "Refresh interval (seconds)",
             min_value=2,
             max_value=30,
-            value=5
+            value=5,
+            help="How often to refresh the dashboard"
         )
-        st.sidebar.info(f"Refreshing every {refresh_interval}s")
+        st.sidebar.caption(f"⟳ Refreshing every {refresh_interval}s")
 
-    st.sidebar.divider()
-
-    # Manual refresh button
-    if st.sidebar.button("🔄 Refresh Now"):
+    if st.sidebar.button("Refresh Now", use_container_width=True, type="secondary"):
         st.rerun()
 
-    # Dashboard info
-    st.sidebar.caption("---")
-    st.sidebar.caption("**ASVFlow Live Dashboard**")
-    st.sidebar.caption("Version: 2.0.0 (Phase 2)")
-    st.sidebar.caption(f"Project: `{project_dir.name}`")
+    # ========== FOOTER ==========
+    st.sidebar.markdown(f'''
+    <div class="footer-container">
+        <div><strong>ASVFlow Live Dashboard</strong></div>
+        <div>Version 2.0.0</div>
+        <div style="margin-top: 0.25rem;">Project: {project_dir.name}</div>
+    </div>
+    ''', unsafe_allow_html=True)
 
     # Main content area - Home/Overview
     # ========== HEADER SECTION ==========
