@@ -8,6 +8,7 @@ set -e
 OUTDIR="${1:-results}"
 PORT="${2:-8501}"
 DASHBOARD_SIF="${3:-tools/asvflow-dashboard.sif}"
+DASHBOARD_BIND_ADDRESS="${DASHBOARD_BIND_ADDRESS:-127.0.0.1}"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Dashboard state directory
@@ -129,7 +130,7 @@ log_info "  Log file: ${LOG_FILE}"
 
 # Use singularity exec with proper binds and environment
 STREAMLIT_SERVER_PORT="${ACTUAL_PORT}" \
-STREAMLIT_SERVER_ADDRESS="127.0.0.1" \
+STREAMLIT_SERVER_ADDRESS="${DASHBOARD_BIND_ADDRESS}" \
 STREAMLIT_SERVER_HEADLESS=true \
 STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
 singularity exec \
@@ -140,7 +141,7 @@ singularity exec \
     "${DASHBOARD_SIF_ABS}" \
     streamlit run "${PROJECT_DIR}/dashboard/app.py" \
     --server.port="${ACTUAL_PORT}" \
-    --server.address="127.0.0.1" \
+    --server.address="${DASHBOARD_BIND_ADDRESS}" \
     --server.headless=true \
     --browser.gatherUsageStats=false \
     -- --outdir "${OUTDIR_ABS}" \
