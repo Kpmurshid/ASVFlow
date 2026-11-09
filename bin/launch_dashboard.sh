@@ -16,6 +16,9 @@ DASHBOARD_DIR="${OUTDIR}/.asvflow_dashboard"
 PID_FILE="${DASHBOARD_DIR}/dashboard.pid"
 LOG_FILE="${DASHBOARD_DIR}/dashboard.log"
 PORT_FILE="${DASHBOARD_DIR}/dashboard.port"
+PGID_FILE="${DASHBOARD_DIR}/dashboard.pgid"
+PROJECT_FILE="${DASHBOARD_DIR}/dashboard.project"
+OUTDIR_FILE="${DASHBOARD_DIR}/dashboard.outdir"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -52,41 +55,88 @@ if [ ! -f "${DASHBOARD_SIF}" ]; then
     exit 1
 fi
 
-# Check if dashboard already running
-if [ -f "${PID_FILE}" ]; then
-    OLD_PID=$(cat "${PID_FILE}")
-    OLD_PORT=$(cat "${PORT_FILE}" 2>/dev/null || echo "${PORT}")
+# Function to verify a running dashboard by checking process, cmdline, port, and metadata
+is_dashboard_running() {
+    local pid="$1"
+    local expected_port="$2"
+    local expected_project="$3"
+    local expected_outdir="$4"
 
-    # Verify process exists and is actually our dashboard
-    if kill -0 "$OLD_PID" 2>/dev/null; then
-        # Check if this is a Singularity container process (parent of streamlit)
-        PROC_COMM=$(ps -p "$OLD_PID" -o comm= 2>/dev/null || echo "")
+    # Check if PID exists
+    if ! kill -0 "$pid" 2>/dev/null; then
+        return 1
+    fi
 
-        # Verify it's Singularity (starter-suid) and has streamlit child
-        if [[ "$PROC_COMM" =~ ^starter ]]; then
-            # Additional check: verify streamlit child exists and matches our port
-            if pgrep -P "$OLD_PID" -x "streamlit" >/dev/null 2>&1; then
-                # Verify this dashboard serves the correct outdir (check port file timestamp)
-                if [ -f "${PORT_FILE}" ]; then
-                    log_info "Dashboard already running (PID: ${OLD_PID}, Port: ${OLD_PORT})"
-                    echo ""
-                    echo "╔════════════════════════════════════════╗"
-                    echo "║  ASVFlow Live Dashboard                ║"
-                    echo "║  http://localhost:${OLD_PORT}              ║"
-                    echo "╚════════════════════════════════════════╝"
-                    echo ""
-                    exit 0
-                fi
+    # Verify PID is a process group leader (PGID == PID)
+    local actual_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ "$actual_pgid" != "$pid" ]; then
+        return 1
+    fi
+
+    # Verify port is listening
+    if ! (lsof -i ":${expected_port}" -sTCP:LISTEN 2>/dev/null | grep -q ":${expected_port}"); then
+        if ! (ss -tuln 2>/dev/null | grep -q ":${expected_port}.*LISTEN"); then
+            return 1
+        fi
+    fi
+
+    # Verify project and outdir match stored values
+    if [ -f "${PROJECT_FILE}" ] && [ -f "${OUTDIR_FILE}" ]; then
+        local stored_project=$(cat "${PROJECT_FILE}")
+        local stored_outdir=$(cat "${OUTDIR_FILE}")
+
+        if [ "${stored_project}" = "${expected_project}" ] && [ "${stored_outdir}" = "${expected_outdir}" ]; then
+            # Find streamlit process in the group and verify cmdline
+            local streamlit_pids=$(pgrep -g "$pid" -x "streamlit" 2>/dev/null || true)
+            if [ -n "$streamlit_pids" ]; then
+                for spid in $streamlit_pids; do
+                    if [ -f "/proc/$spid/cmdline" ]; then
+                        local cmdline=$(tr '\0' ' ' < /proc/$spid/cmdline 2>/dev/null || true)
+                        # Check for dashboard app.py, port, and outdir in command line
+                        if echo "$cmdline" | grep -q "dashboard/app.py" && \
+                           echo "$cmdline" | grep -q "server.port.*${expected_port}" && \
+                           echo "$cmdline" | grep -q "outdir.*${expected_outdir}"; then
+                            return 0
+                        fi
+                    fi
+                done
             fi
         fi
+    fi
 
-        # Process exists but is not our dashboard (PID reuse)
-        log_warning "PID ${OLD_PID} exists but is not ASVFlow dashboard (${PROC_COMM})"
-        log_warning "Cleaning up stale PID file"
-        rm -f "${PID_FILE}" "${PORT_FILE}"
+    return 1
+}
+
+# Check if dashboard already running
+if [ -f "${PID_FILE}" ] && [ -f "${PORT_FILE}" ]; then
+    OLD_PID=$(cat "${PID_FILE}")
+    OLD_PORT=$(cat "${PORT_FILE}")
+
+    # Convert to absolute paths for comparison
+    OUTDIR_ABS_CHECK="$(cd "${OUTDIR}" 2>/dev/null && pwd || echo "${OUTDIR}")"
+
+    # First check if the process group is still alive
+    if kill -0 "${OLD_PID}" 2>/dev/null; then
+        # Process exists, verify it's our dashboard
+        if is_dashboard_running "${OLD_PID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}"; then
+            log_info "Dashboard already running (PID: ${OLD_PID}, Port: ${OLD_PORT})"
+            echo ""
+            echo "╔════════════════════════════════════════╗"
+            echo "║  ASVFlow Live Dashboard                ║"
+            echo "║  http://localhost:${OLD_PORT}              ║"
+            echo "╚════════════════════════════════════════╝"
+            echo ""
+            exit 0
+        else
+            # Process exists but identity verification failed - do not clean
+            log_error "PID ${OLD_PID} exists but does not match expected dashboard identity"
+            log_error "Please stop the process manually and remove: ${DASHBOARD_DIR}"
+            exit 1
+        fi
     else
-        log_warning "Stale PID file found, cleaning up"
-        rm -f "${PID_FILE}" "${PORT_FILE}"
+        # Process is dead, safe to clean up stale files
+        log_warning "Stale dashboard state files found, cleaning up"
+        rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}"
     fi
 fi
 
@@ -128,12 +178,14 @@ log_info "  Output directory: ${OUTDIR_ABS}"
 log_info "  Port: ${ACTUAL_PORT}"
 log_info "  Log file: ${LOG_FILE}"
 
-# Use singularity exec with proper binds and environment
-STREAMLIT_SERVER_PORT="${ACTUAL_PORT}" \
-STREAMLIT_SERVER_ADDRESS="${DASHBOARD_BIND_ADDRESS}" \
-STREAMLIT_SERVER_HEADLESS=true \
-STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
-singularity exec \
+# Use setsid to create new session - this makes the process the session leader and PGID = PID
+# We avoid nested shell strings by using environment export
+export STREAMLIT_SERVER_PORT="${ACTUAL_PORT}"
+export STREAMLIT_SERVER_ADDRESS="${DASHBOARD_BIND_ADDRESS}"
+export STREAMLIT_SERVER_HEADLESS=true
+export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+setsid singularity exec \
     -B "${PROJECT_DIR}:${PROJECT_DIR}:ro" \
     -B "${OUTDIR_ABS}:${OUTDIR_ABS}:ro" \
     --pwd "${PROJECT_DIR}" \
@@ -149,9 +201,20 @@ singularity exec \
 
 DASHBOARD_PID=$!
 
-# Save PID and port
+# Verify PGID == PID (setsid should ensure this)
+DASHBOARD_PGID=$(ps -o pgid= -p "${DASHBOARD_PID}" 2>/dev/null | tr -d ' ')
+if [ -z "${DASHBOARD_PGID}" ] || [ "${DASHBOARD_PGID}" != "${DASHBOARD_PID}" ]; then
+    log_error "Failed to create process group (PID: ${DASHBOARD_PID}, PGID: ${DASHBOARD_PGID})"
+    log_error "Check log file: ${LOG_FILE}"
+    exit 1
+fi
+
+# Save PID, PGID, port, project, and outdir for reliable identification
 echo "${DASHBOARD_PID}" > "${PID_FILE}"
+echo "${DASHBOARD_PGID}" > "${PGID_FILE}"
 echo "${ACTUAL_PORT}" > "${PORT_FILE}"
+echo "${PROJECT_DIR}" > "${PROJECT_FILE}"
+echo "${OUTDIR_ABS}" > "${OUTDIR_FILE}"
 
 # Wait for startup (max 15 seconds)
 log_info "Waiting for dashboard to start..."
@@ -161,7 +224,7 @@ for i in $(seq 1 30); do
     if ! kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
         log_error "Dashboard process died during startup"
         log_error "Check log file: ${LOG_FILE}"
-        rm -f "${PID_FILE}" "${PORT_FILE}"
+        rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}"
         exit 1
     fi
 
