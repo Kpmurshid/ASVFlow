@@ -396,7 +396,8 @@ def main():
     # ========== TASK DETAILS SECTION ==========
     st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; margin-top: 2rem; padding-bottom: 0.5rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Task Execution Details</div>', unsafe_allow_html=True)
 
-    trace_df = scanner.get_execution_trace()
+    # Get session-specific execution trace
+    trace_df = scanner.get_execution_trace(selected_run['session_id'], monitor)
 
     if not trace_df.empty:
         st.caption(f"Showing {len(trace_df)} completed tasks from execution trace")

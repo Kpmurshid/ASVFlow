@@ -162,7 +162,8 @@ def render(monitor, scanner, run_info: Dict):
     # ========== TASK METRICS SECTION ==========
     st.markdown('<div class="section-header">Task Execution Summary</div>', unsafe_allow_html=True)
 
-    task_summary = scanner.get_task_status_summary()
+    # Get session-specific task statistics
+    task_summary = scanner.get_task_status_summary(run_info['session_id'], monitor)
 
     if task_summary['total'] > 0:
         st.caption("Showing completed tasks from execution trace")

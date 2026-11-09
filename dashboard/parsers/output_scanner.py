@@ -16,27 +16,75 @@ class OutputScanner:
     def __init__(self, outdir: str):
         self.outdir = Path(outdir)
 
-    def get_execution_trace(self) -> pd.DataFrame:
-        """Parse execution_trace.txt file"""
+    def get_execution_trace(self, session_id: Optional[str] = None, monitor=None) -> pd.DataFrame:
+        """Parse execution trace from Nextflow's task log.
+
+        Args:
+            session_id: Nextflow session ID (UUID format). If provided with monitor,
+                       retrieves session-specific task data from Nextflow's internal database.
+            monitor: NextflowMonitor instance. Required when session_id is provided.
+
+        Returns:
+            DataFrame with task execution data, or empty DataFrame if unavailable.
+
+        Note: When session_id is provided, this method uses Nextflow's internal task log
+              as the authoritative source and does NOT fall back to trace files, ensuring
+              strict session isolation.
+        """
+        # If session_id is provided, enforce strict session isolation
+        if session_id:
+            # If monitor is not provided, cannot query session-specific data
+            if not monitor:
+                return pd.DataFrame()
+
+            # Query Nextflow's internal task log for session-specific data
+            try:
+                df = monitor.get_task_log(session_id)
+                # Return immediately, even if empty - do not fall back to trace files
+                # when session_id is explicitly provided
+                return df
+            except Exception as e:
+                print(f"Warning: Failed to get task log from Nextflow: {e}")
+                # Return empty DataFrame on failure when session_id is provided
+                return pd.DataFrame()
+
+        # Legacy fallback: Only used when session_id is None
+        # This preserves backward compatibility for callers without session info
+
+        # Look for timestamped trace files in pipeline_info
+        pipeline_info_dir = self.outdir / 'pipeline_info'
+        if pipeline_info_dir.exists():
+            # Get the most recent trace file
+            trace_files = sorted(pipeline_info_dir.glob('trace_*.txt'), reverse=True)
+            if trace_files:
+                try:
+                    df = pd.read_csv(trace_files[0], sep='\t')
+                    return df
+                except Exception as e:
+                    print(f"Warning: Failed to parse {trace_files[0]}: {e}")
+
+        # Legacy fallback: execution_trace.txt in outdir root
         trace_file = self.outdir / 'execution_trace.txt'
+        if trace_file.exists():
+            try:
+                df = pd.read_csv(trace_file, sep='\t')
+                return df
+            except Exception as e:
+                print(f"Warning: Failed to parse execution_trace.txt: {e}")
 
-        if not trace_file.exists():
-            return pd.DataFrame()
+        return pd.DataFrame()
 
-        try:
-            df = pd.read_csv(trace_file, sep='\t')
-            return df
-        except Exception as e:
-            print(f"Warning: Failed to parse execution_trace.txt: {e}")
-            return pd.DataFrame()
-
-    def get_task_status_summary(self) -> Dict[str, int]:
+    def get_task_status_summary(self, session_id: Optional[str] = None, monitor=None) -> Dict[str, int]:
         """Aggregate task counts by status from execution trace.
 
-        Note: Only completed/cached tasks appear in execution_trace.txt.
+        Args:
+            session_id: Nextflow session ID for session-specific data.
+            monitor: NextflowMonitor instance for retrieving task log.
+
+        Note: Only completed/cached tasks appear in execution trace.
         Running tasks are NOT detected by this implementation.
         """
-        df = self.get_execution_trace()
+        df = self.get_execution_trace(session_id, monitor)
 
         if df.empty:
             return {

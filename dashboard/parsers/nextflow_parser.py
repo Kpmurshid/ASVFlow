@@ -114,11 +114,18 @@ class NextflowMonitor:
         # Default
         return 'results'
 
-    def get_task_log(self, run_name: str) -> pd.DataFrame:
-        """Get task-level details using nextflow log <run_name>"""
+    def get_task_log(self, session_id: str) -> pd.DataFrame:
+        """Get task-level details using nextflow log <session_id>
+
+        Args:
+            session_id: Nextflow session ID (UUID format)
+
+        Returns:
+            DataFrame with task execution data for the specified session
+        """
         try:
             result = subprocess.run(
-                ["nextflow", "log", run_name, "-f",
+                ["nextflow", "log", session_id, "-f",
                  "task_id,hash,name,status,exit,submit,duration,realtime,pcpu,peak_rss"],
                 cwd=self.project_dir,
                 capture_output=True,
