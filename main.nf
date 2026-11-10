@@ -42,53 +42,65 @@ workflow {
 
             // Launch dashboard asynchronously
             def proc = dashboard_cmd.execute()
-            
+            def dashboard_stdout = new StringBuffer()
+            def dashboard_stderr = new StringBuffer()
+            proc.consumeProcessOutput(dashboard_stdout, dashboard_stderr)
+
             // Wait for launcher to complete with bounded timeout (max 20 seconds)
             def timeout_ms = 20000
             def start_time = System.currentTimeMillis()
             def launcher_completed = false
-            
+
             while (System.currentTimeMillis() - start_time < timeout_ms) {
                 try {
                     def exit_val = proc.exitValue()
-                    launcher_completed = true
-                    
-                    if (exit_val != 0) {
-                        def stderr = proc.err.text
+
+                    if (exit_val == 0) {
+                        // Launcher succeeded, read port and bind address files and print URL
+                        def dashboard_dir = file("${params.outdir}/.asvflow_dashboard")
+                        def port_file = file("${dashboard_dir}/dashboard.port")
+                        def bind_address_file = file("${dashboard_dir}/dashboard.bind_address")
+
+                        if (port_file.exists()) {
+                            def port = port_file.text.trim()
+                            def bind_address = bind_address_file.exists() ? bind_address_file.text.trim() : "127.0.0.1"
+
+                            // Build display URL based on bind address
+                            def display_url = "http://localhost:${port}"
+                            if (bind_address != "127.0.0.1" && bind_address != "0.0.0.0" && bind_address != "::") {
+                                def url_host = bind_address.contains(':') && !bind_address.startsWith('[') ? "[${bind_address}]" : bind_address
+                                display_url = "http://${url_host}:${port}"
+                            }
+
+                            log.info ""
+                            log.info "╔════════════════════════════════════════╗"
+                            log.info "║  ASVFlow Live Dashboard                ║"
+                            log.info "║  ${display_url.padRight(36)}  ║"
+                            log.info "╚════════════════════════════════════════╝"
+                            log.info ""
+                            log.info "Dashboard is running. Pipeline execution begins now."
+                            log.info ""
+                        } else {
+                            log.warn "Dashboard launcher completed but port file not found"
+                            log.warn "Expected: ${port_file}"
+                        }
+                    } else {
+                        def stderr = dashboard_stderr.toString().trim()
                         log.warn "Dashboard launcher exited with code ${exit_val}"
                         if (stderr) {
                             log.warn "Error output: ${stderr}"
                         }
                         log.warn "Pipeline will continue. Start manually with: ${dashboard_cmd}"
-                        break
                     }
-                    
-                    // Launcher succeeded, read port file and print URL
-                    def dashboard_dir = file("${params.outdir}/.asvflow_dashboard")
-                    def port_file = file("${dashboard_dir}/dashboard.port")
-                    
-                    if (port_file.exists()) {
-                        def port = port_file.text.trim()
-                        log.info ""
-                        log.info "╔════════════════════════════════════════╗"
-                        log.info "║  ASVFlow Live Dashboard                ║"
-                        log.info "║  http://localhost:${port}              ║"
-                        log.info "╚════════════════════════════════════════╝"
-                        log.info ""
-                        log.info "Dashboard is running. Pipeline execution begins now."
-                        log.info ""
-                    } else {
-                        log.warn "Dashboard launcher completed but port file not found"
-                        log.warn "Expected: ${port_file}"
-                    }
+                    launcher_completed = true
                     break
-                    
+
                 } catch (IllegalThreadStateException e) {
                     // Process still running, wait a bit
                     sleep(500)
                 }
             }
-            
+
             if (!launcher_completed) {
                 log.warn "Dashboard startup timed out after ${timeout_ms/1000} seconds"
                 log.warn "Pipeline will continue. Check dashboard status manually."

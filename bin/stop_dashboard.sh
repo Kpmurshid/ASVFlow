@@ -12,6 +12,8 @@ PORT_FILE="${DASHBOARD_DIR}/dashboard.port"
 PGID_FILE="${DASHBOARD_DIR}/dashboard.pgid"
 PROJECT_FILE="${DASHBOARD_DIR}/dashboard.project"
 OUTDIR_FILE="${DASHBOARD_DIR}/dashboard.outdir"
+BIND_ADDRESS_FILE="${DASHBOARD_DIR}/dashboard.bind_address"
+IDENTITY_FILE="${DASHBOARD_DIR}/dashboard.identity"
 
 # Color codes
 GREEN='\033[0;32m'
@@ -31,62 +33,285 @@ log_error() {
     echo -e "${RED}[Dashboard]${NC} $1"
 }
 
-# Function to verify dashboard identity before termination
-verify_dashboard_identity() {
-    local pid="$1"
-    local pgid="$2"
-    local expected_port="$3"
-    local expected_project="$4"
-    local expected_outdir="$5"
+dashboard_process_helper() {
+    python3 - "$@" <<'PY'
+import hashlib
+import json
+import os
+import re
+import signal
+import stat
+import sys
 
-    # Check if process exists
-    if ! kill -0 "$pid" 2>/dev/null; then
-        return 1
-    fi
 
-    # Verify PGID == PID (must be process group leader)
-    local actual_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
-    if [ -z "$actual_pgid" ] || [ "$actual_pgid" != "$pid" ] || [ "$actual_pgid" != "$pgid" ]; then
-        return 1
-    fi
+def fail(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
 
-    # Verify stored project and outdir match
-    if [ -f "${PROJECT_FILE}" ] && [ -f "${OUTDIR_FILE}" ]; then
-        local stored_project=$(cat "${PROJECT_FILE}")
-        local stored_outdir=$(cat "${OUTDIR_FILE}")
 
-        if [ "${stored_project}" = "${expected_project}" ] && [ "${stored_outdir}" = "${expected_outdir}" ]; then
-            # Verify process group leader identity first
-            if [ -f "/proc/$pid/cmdline" ]; then
-                local parent_cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
-                # Check for Singularity exec with dashboard app
-                if ! echo "$parent_cmdline" | grep -q "singularity exec"; then
-                    return 1
-                fi
-                if ! echo "$parent_cmdline" | grep -q "dashboard/app.py"; then
-                    return 1
-                fi
-            fi
+def read_task(pid, proc_fd=None):
+    proc = f"/proc/{pid}"
+    owned_fd = proc_fd is None
+    try:
+        if owned_fd:
+            proc_fd = os.open(proc, os.O_RDONLY | os.O_DIRECTORY)
 
-            # Find streamlit process in the group and verify cmdline
-            local streamlit_pids=$(pgrep -g "$pgid" -x "streamlit" 2>/dev/null || true)
-            if [ -n "$streamlit_pids" ]; then
-                for spid in $streamlit_pids; do
-                    if [ -f "/proc/$spid/cmdline" ]; then
-                        local cmdline=$(tr '\0' ' ' < /proc/$spid/cmdline 2>/dev/null || true)
-                        # Check for dashboard app.py, port, and outdir in command line
-                        if echo "$cmdline" | grep -q "dashboard/app.py" && \
-                           echo "$cmdline" | grep -q "server.port.*${expected_port}" && \
-                           echo "$cmdline" | grep -q "outdir.*${expected_outdir}"; then
-                            return 0
-                        fi
-                    fi
-                done
-            fi
-        fi
-    fi
+        def read_bytes(name):
+            fd = os.open(name, os.O_RDONLY, dir_fd=proc_fd)
+            with os.fdopen(fd, "rb") as stream:
+                return stream.read()
 
-    return 1
+        def read_text(name):
+            fd = os.open(name, os.O_RDONLY, dir_fd=proc_fd)
+            with os.fdopen(fd, "r", encoding="ascii") as stream:
+                return stream.read()
+
+        raw_stat = read_bytes("stat").decode()
+        fields = raw_stat[raw_stat.rfind(")") + 2:].split()
+        status = read_text("status")
+        uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
+        return {
+            "state": fields[0],
+            "pgrp": int(fields[2]),
+            "session": int(fields[3]),
+            "start_ticks": int(fields[19]),
+            "uid": int(uid_line.split()[1]),
+            "exe": os.readlink("exe", dir_fd=proc_fd),
+            "cmdline": read_bytes("cmdline"),
+        }
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    except (OSError, ValueError, StopIteration, IndexError) as error:
+        fail(f"Cannot verify process {pid}: {error}")
+    finally:
+        if owned_fd and proc_fd is not None:
+            os.close(proc_fd)
+
+
+def argv_for(task):
+    if not task or not task["cmdline"]:
+        return []
+    return [os.fsdecode(arg) for arg in task["cmdline"].split(b"\0") if arg]
+
+
+def has_dashboard_command(task, project, port, outdir):
+    argv = argv_for(task)
+    try:
+        outdir_index = argv.index("--outdir")
+    except ValueError:
+        return False
+    return (
+        os.path.join(project, "dashboard", "app.py") in argv
+        and f"--server.port={port}" in argv
+        and outdir_index + 1 < len(argv)
+        and argv[outdir_index + 1] == outdir
+    )
+
+
+def is_dashboard_executable(task):
+    executable = os.path.basename(task["exe"])
+    return executable == "streamlit" or re.fullmatch(
+        r"python(?:\d+(?:\.\d+)*)?", executable
+    ) is not None
+
+
+def is_dashboard_member(task, project, port, outdir, expected_uid, pgid):
+    argv = argv_for(task)
+    app = os.path.join(project, "dashboard", "app.py")
+    try:
+        app_index = argv.index(app)
+        outdir_index = argv.index("--outdir")
+    except ValueError:
+        return False
+    return (
+        task["uid"] == expected_uid
+        and task["pgrp"] == pgid
+        and task["session"] == pgid
+        and is_dashboard_executable(task)
+        and app_index > 0
+        and "run" in argv[:app_index]
+        and f"--server.port={port}" in argv
+        and outdir_index + 1 < len(argv)
+        and argv[outdir_index + 1] == outdir
+    )
+
+
+action, pid_text, pgid_text, port, project, outdir, identity_path, *extra = sys.argv[1:]
+if not pid_text.isdecimal() or not pgid_text.isdecimal():
+    fail("PID and PGID must be decimal integers")
+pid, pgid = int(pid_text), int(pgid_text)
+
+try:
+    fd = os.open(identity_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    metadata_stat = os.fstat(fd)
+    if (
+        not stat.S_ISREG(metadata_stat.st_mode)
+        or metadata_stat.st_uid != os.getuid()
+        or metadata_stat.st_mode & 0o022
+    ):
+        fail("Dashboard ownership metadata has unsafe type, owner, or permissions")
+    with os.fdopen(fd, "r", encoding="utf-8") as stream:
+        identity = json.load(stream)
+except (OSError, ValueError, json.JSONDecodeError) as error:
+    fail(f"Cannot read dashboard ownership metadata: {error}")
+
+expected_keys = {
+    "version", "pid", "pgid", "uid", "boot_id", "start_ticks", "exe",
+    "cmdline_sha256", "project", "outdir", "port",
+}
+metadata_dir = os.stat(os.path.dirname(identity_path), follow_symlinks=False)
+if (
+    not isinstance(identity, dict)
+    or set(identity) != expected_keys
+    or type(identity["version"]) is not int
+    or type(identity["pid"]) is not int
+    or type(identity["pgid"]) is not int
+    or type(identity["uid"]) is not int
+    or type(identity["start_ticks"]) is not int
+    or identity["version"] != 1
+    or identity["pid"] != pid
+    or identity["pgid"] != pgid
+    or identity["uid"] != os.getuid()
+    or identity["project"] != project
+    or identity["outdir"] != outdir
+    or identity["port"] != port
+    or identity["boot_id"] != open("/proc/sys/kernel/random/boot_id", encoding="ascii").read().strip()
+    or identity["start_ticks"] <= 0
+    or not isinstance(identity["exe"], str)
+    or not os.path.isabs(identity["exe"])
+    or not isinstance(identity["cmdline_sha256"], str)
+    or len(identity["cmdline_sha256"]) != 64
+    or any(character not in "0123456789abcdef" for character in identity["cmdline_sha256"])
+    or not stat.S_ISDIR(metadata_dir.st_mode)
+    or metadata_dir.st_uid != os.getuid()
+    or metadata_dir.st_mode & 0o022
+):
+    fail("Dashboard ownership metadata is invalid or does not match this launch")
+
+
+def leader_matches(task):
+    return bool(
+        task
+        and task["state"] not in ("Z", "X")
+        and task["pgrp"] == pgid
+        and task["session"] == pgid
+        and task["uid"] == identity["uid"]
+        and task["start_ticks"] == identity["start_ticks"]
+        and task["exe"] == identity["exe"]
+        and hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
+        and os.path.basename(task["exe"]) in ("singularity", "apptainer")
+        and "exec" in argv_for(task)
+        and has_dashboard_command(task, project, port, outdir)
+    )
+
+
+def read_group():
+    members = []
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdecimal():
+            continue
+        task_pid = int(entry.name)
+        try:
+            raw_stat = open(f"/proc/{task_pid}/stat", "rb").read().decode()
+            stat_fields = raw_stat[raw_stat.rfind(")") + 2:].split()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except OSError as error:
+            fail(f"Cannot inspect process-group membership for {task_pid}: {error}")
+        if int(stat_fields[2]) != pgid:
+            continue
+        try:
+            proc_fd = os.open(
+                f"/proc/{task_pid}", os.O_RDONLY | os.O_DIRECTORY
+            )
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        task = read_task(task_pid, proc_fd)
+        if not task or task["pgrp"] != pgid or task["state"] in ("Z", "X"):
+            os.close(proc_fd)
+            continue
+        if task["session"] != pgid:
+            os.close(proc_fd)
+            fail(f"Process {task_pid} in the dashboard group has an unexpected session")
+        if task_pid == pid:
+            if not leader_matches(task):
+                os.close(proc_fd)
+                fail("Launcher identity changed; refusing to signal the process group")
+        elif not is_dashboard_member(task, project, port, outdir, identity["uid"], pgid):
+            os.close(proc_fd)
+            fail(f"Unverified process {task_pid} shares the dashboard process group")
+        members.append((task_pid, task, proc_fd))
+
+    leader = next((task for task_pid, task, _ in members if task_pid == pid), None)
+    if leader is None:
+        if members:
+            for _, _, proc_fd in members:
+                os.close(proc_fd)
+            fail("Launcher identity is gone while processes remain in its group")
+        return None
+    if not any(member_pid == pid for member_pid, _, _ in members):
+        for _, _, proc_fd in members:
+            os.close(proc_fd)
+        fail("The original launcher is not the process-group leader")
+    return sorted(members, key=lambda member: member[0] == pid)
+
+
+def close_group(group):
+    if group:
+        for _, _, proc_fd in group:
+            os.close(proc_fd)
+
+
+if action == "inspect":
+    group = read_group()
+    close_group(group)
+    raise SystemExit(0 if group else 2)
+if action != "signal" or len(extra) != 1 or extra[0] not in ("TERM", "KILL"):
+    fail("Invalid dashboard process-helper action")
+if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+    fail("This Python/Linux runtime lacks pidfd signaling; refusing numeric-PID signaling")
+
+group = read_group()
+if not group:
+    fail("Original dashboard launcher is no longer running")
+signal_number = signal.SIGTERM if extra[0] == "TERM" else signal.SIGKILL
+try:
+    for target_pid, original_task, proc_fd in group:
+        before = read_task(target_pid, proc_fd)
+        if before is None or before != original_task:
+            fail(f"Process {target_pid} changed before pidfd_open")
+        try:
+            pidfd = os.pidfd_open(target_pid)
+        except ProcessLookupError:
+            continue
+        try:
+            fdinfo = open(f"/proc/self/fdinfo/{pidfd}", encoding="ascii").read()
+            if f"Pid:\t{target_pid}\n" not in fdinfo:
+                fail(f"pidfd does not refer to expected PID {target_pid}")
+            current = read_task(target_pid, proc_fd)
+            if current is None or current != original_task:
+                fail(f"pidfd target {target_pid} does not match the verified process instance")
+            current_group = read_group()
+            if not current_group:
+                fail("Original dashboard ownership or process-group membership was lost")
+            try:
+                current_member = next(
+                    (member for member in current_group if member[0] == target_pid),
+                    None,
+                )
+                if current_member is None or current_member[1] != original_task:
+                    fail(f"Process {target_pid} is no longer a verified dashboard group member")
+            finally:
+                close_group(current_group)
+            current = read_task(target_pid, proc_fd)
+            if current is None or current != original_task:
+                fail(f"Process {target_pid} changed immediately before signaling")
+            signal.pidfd_send_signal(pidfd, signal_number)
+        finally:
+            os.close(pidfd)
+finally:
+    close_group(group)
+PY
 }
 
 # Function to check if port is still in use
@@ -108,119 +333,117 @@ if [ ! -f "${PID_FILE}" ]; then
 fi
 
 PID=$(cat "${PID_FILE}")
-PGID=$(cat "${PGID_FILE}" 2>/dev/null || echo "${PID}")
+PGID=$(cat "${PGID_FILE}" 2>/dev/null || echo "")
 PORT=$(cat "${PORT_FILE}" 2>/dev/null || echo "unknown")
 
 # Convert to absolute path for comparison
 OUTDIR_ABS="$(cd "${OUTDIR}" 2>/dev/null && pwd || echo "${OUTDIR}")"
 
-# First check if process is still alive
-if ! kill -0 "${PID}" 2>/dev/null; then
-    log_warning "Dashboard process (PID: ${PID}) not running"
-    log_warning "Cleaning up stale state files"
-    rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}"
-    exit 0
+if [[ ! "${PID}" =~ ^[0-9]+$ || ! "${PGID}" =~ ^[0-9]+$ || ! "${PORT}" =~ ^[0-9]+$ ]]; then
+    log_error "Dashboard PID, PGID, or port metadata is missing or invalid"
+    log_error "State files preserved in: ${DASHBOARD_DIR}"
+    exit 1
 fi
 
-# Verify this is our dashboard before killing
-if ! verify_dashboard_identity "${PID}" "${PGID}" "${PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}"; then
-    log_error "PID ${PID} exists but does not match this dashboard's identity"
-    log_error "Refusing to kill potentially unrelated process"
+if [ ! -f "${IDENTITY_FILE}" ] || [ ! -f "${PROJECT_FILE}" ] || [ ! -f "${OUTDIR_FILE}" ]; then
+    log_error "Dashboard ownership metadata is missing (legacy or partial state)"
+    log_error "Refusing automatic termination; verify process identity manually before recovery."
+    log_error "Do not signal stored PID/PGID values directly."
+    log_error "State files preserved in: ${DASHBOARD_DIR}"
+    exit 1
+fi
+
+if [ "$(cat "${PROJECT_FILE}")" != "${PROJECT_DIR}" ] || [ "$(cat "${OUTDIR_FILE}")" != "${OUTDIR_ABS}" ]; then
+    log_error "Stored project or output-directory metadata does not match"
+    log_error "Refusing automatic termination; state files preserved in: ${DASHBOARD_DIR}"
+    exit 1
+fi
+
+if dashboard_process_helper inspect "${PID}" "${PGID}" "${PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}"; then
+    :
+else
+    HELPER_STATUS=$?
+    if [ "${HELPER_STATUS}" -eq 2 ]; then
+        if ! is_port_in_use "${PORT}"; then
+            log_warning "Verified dashboard process group is gone; cleaning stale state"
+            rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}" "${BIND_ADDRESS_FILE}" "${IDENTITY_FILE}"
+            exit 0
+        fi
+        log_error "Dashboard process group is gone but port ${PORT} remains in use"
+    else
+        log_error "Dashboard ownership verification failed"
+    fi
     log_error "State files preserved in: ${DASHBOARD_DIR}"
     exit 1
 fi
 
 log_info "Stopping dashboard (PID: ${PID}, PGID: ${PGID}, Port: ${PORT})"
-
-# Try graceful shutdown - kill entire process group
-if ! kill -TERM -"${PGID}" 2>/dev/null; then
-    log_error "Failed to send TERM signal to process group ${PGID}"
+if ! dashboard_process_helper signal "${PID}" "${PGID}" "${PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}" TERM; then
+    log_error "TERM was not sent because ownership could not be verified"
     log_error "State files preserved in: ${DASHBOARD_DIR}"
     exit 1
 fi
 
-# Wait up to 10 seconds for graceful shutdown
-TIMEOUT=20
-for i in $(seq 1 ${TIMEOUT}); do
-    # Check if main process is gone AND no streamlit processes remain
-    PARENT_DEAD=false
-    CHILDREN_DEAD=false
-
-    if ! kill -0 "${PID}" 2>/dev/null; then
-        PARENT_DEAD=true
-    fi
-
-    if ! pgrep -g "${PGID}" -x "streamlit" >/dev/null 2>&1; then
-        CHILDREN_DEAD=true
-    fi
-
-    # Break if both parent and children are terminated
-    if [ "$PARENT_DEAD" = "true" ] && [ "$CHILDREN_DEAD" = "true" ]; then
-        break
-    fi
-
-    sleep 0.5
-done
-
-# Check if processes still running after graceful shutdown attempt
-PARENT_ALIVE=false
-CHILDREN_ALIVE=false
-
-if kill -0 "${PID}" 2>/dev/null; then
-    PARENT_ALIVE=true
-fi
-
-if pgrep -g "${PGID}" -x "streamlit" >/dev/null 2>&1; then
-    CHILDREN_ALIVE=true
-fi
-
-# Force kill if either parent or children still alive
-if [ "$PARENT_ALIVE" = "true" ] || [ "$CHILDREN_ALIVE" = "true" ]; then
-    log_warning "Graceful shutdown timed out, forcing shutdown..."
-    if ! kill -KILL -"${PGID}" 2>/dev/null; then
-        log_error "Failed to send KILL signal to process group ${PGID}"
-        log_error "State files preserved in: ${DASHBOARD_DIR}"
+GROUP_GONE=false
+for i in $(seq 1 20); do
+    if dashboard_process_helper inspect "${PID}" "${PGID}" "${PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}"; then
+        sleep 0.5
+    else
+        HELPER_STATUS=$?
+        if [ "${HELPER_STATUS}" -eq 2 ]; then
+            GROUP_GONE=true
+            break
+        fi
+        log_error "Ownership verification failed after TERM; preserving state files"
         exit 1
     fi
-    sleep 1
-fi
+done
 
-# Final verification - check both parent and child process termination, plus port release
-PARENT_DEAD=false
-CHILDREN_DEAD=false
-PORT_RELEASED=false
-
-if ! kill -0 "${PID}" 2>/dev/null; then
-    PARENT_DEAD=true
-fi
-
-# Verify no streamlit processes remain in the group
-if ! pgrep -g "${PGID}" -x "streamlit" >/dev/null 2>&1; then
-    CHILDREN_DEAD=true
-fi
-
-# Check port release
-if [ "${PORT}" != "unknown" ]; then
-    if ! is_port_in_use "${PORT}"; then
-        PORT_RELEASED=true
+if [ "${GROUP_GONE}" != "true" ]; then
+    if dashboard_process_helper inspect "${PID}" "${PGID}" "${PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}"; then
+        log_warning "Graceful shutdown timed out; verifying ownership again before KILL..."
+        if ! dashboard_process_helper signal "${PID}" "${PGID}" "${PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}" KILL; then
+            log_error "KILL was not sent because ownership could not be verified"
+            log_error "State files preserved in: ${DASHBOARD_DIR}"
+            exit 1
+        fi
+    else
+        HELPER_STATUS=$?
+        if [ "${HELPER_STATUS}" -eq 2 ]; then
+            GROUP_GONE=true
+        else
+            log_error "Ownership verification failed; refusing KILL"
+            log_error "State files preserved in: ${DASHBOARD_DIR}"
+            exit 1
+        fi
     fi
-else
-    PORT_RELEASED=true
 fi
 
-# Only remove state files if parent is dead, children are dead, and port is released
-if [ "${PARENT_DEAD}" = "true" ] && [ "${CHILDREN_DEAD}" = "true" ] && [ "${PORT_RELEASED}" = "true" ]; then
+if [ "${GROUP_GONE}" != "true" ]; then
+    for i in $(seq 1 20); do
+        if dashboard_process_helper inspect "${PID}" "${PGID}" "${PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}"; then
+            sleep 0.5
+        else
+            HELPER_STATUS=$?
+            if [ "${HELPER_STATUS}" -eq 2 ]; then
+                GROUP_GONE=true
+                break
+            fi
+            log_error "Ownership verification failed after KILL; preserving state files"
+            exit 1
+        fi
+    done
+fi
+
+if [ "${GROUP_GONE}" = "true" ] && ! is_port_in_use "${PORT}"; then
     log_info "Dashboard stopped"
-    rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}"
+    rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}" "${BIND_ADDRESS_FILE}" "${IDENTITY_FILE}"
     exit 0
 else
-    if [ "${PARENT_DEAD}" = "false" ]; then
-        log_error "Dashboard parent process (PID: ${PID}) may still be running"
+    if [ "${GROUP_GONE}" != "true" ]; then
+        log_error "Dashboard process group may still be running"
     fi
-    if [ "${CHILDREN_DEAD}" = "false" ]; then
-        log_error "Dashboard child processes (Streamlit) may still be running"
-    fi
-    if [ "${PORT_RELEASED}" = "false" ]; then
+    if is_port_in_use "${PORT}"; then
         log_error "Port ${PORT} is still in use"
     fi
     log_error "NOT removing state files - manual cleanup may be required"
