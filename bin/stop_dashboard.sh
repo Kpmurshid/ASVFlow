@@ -35,8 +35,9 @@ log_error() {
 verify_dashboard_identity() {
     local pid="$1"
     local pgid="$2"
-    local expected_project="$3"
-    local expected_outdir="$4"
+    local expected_port="$3"
+    local expected_project="$4"
+    local expected_outdir="$5"
 
     # Check if process exists
     if ! kill -0 "$pid" 2>/dev/null; then
@@ -55,14 +56,27 @@ verify_dashboard_identity() {
         local stored_outdir=$(cat "${OUTDIR_FILE}")
 
         if [ "${stored_project}" = "${expected_project}" ] && [ "${stored_outdir}" = "${expected_outdir}" ]; then
+            # Verify process group leader identity first
+            if [ -f "/proc/$pid/cmdline" ]; then
+                local parent_cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+                # Check for Singularity exec with dashboard app
+                if ! echo "$parent_cmdline" | grep -q "singularity exec"; then
+                    return 1
+                fi
+                if ! echo "$parent_cmdline" | grep -q "dashboard/app.py"; then
+                    return 1
+                fi
+            fi
+
             # Find streamlit process in the group and verify cmdline
             local streamlit_pids=$(pgrep -g "$pgid" -x "streamlit" 2>/dev/null || true)
             if [ -n "$streamlit_pids" ]; then
                 for spid in $streamlit_pids; do
                     if [ -f "/proc/$spid/cmdline" ]; then
                         local cmdline=$(tr '\0' ' ' < /proc/$spid/cmdline 2>/dev/null || true)
-                        # Check for dashboard app.py and outdir in command line
+                        # Check for dashboard app.py, port, and outdir in command line
                         if echo "$cmdline" | grep -q "dashboard/app.py" && \
+                           echo "$cmdline" | grep -q "server.port.*${expected_port}" && \
                            echo "$cmdline" | grep -q "outdir.*${expected_outdir}"; then
                             return 0
                         fi
@@ -109,7 +123,7 @@ if ! kill -0 "${PID}" 2>/dev/null; then
 fi
 
 # Verify this is our dashboard before killing
-if ! verify_dashboard_identity "${PID}" "${PGID}" "${PROJECT_DIR}" "${OUTDIR_ABS}"; then
+if ! verify_dashboard_identity "${PID}" "${PGID}" "${PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}"; then
     log_error "PID ${PID} exists but does not match this dashboard's identity"
     log_error "Refusing to kill potentially unrelated process"
     log_error "State files preserved in: ${DASHBOARD_DIR}"
@@ -128,18 +142,40 @@ fi
 # Wait up to 10 seconds for graceful shutdown
 TIMEOUT=20
 for i in $(seq 1 ${TIMEOUT}); do
-    # Check if main process is gone
+    # Check if main process is gone AND no streamlit processes remain
+    PARENT_DEAD=false
+    CHILDREN_DEAD=false
+
     if ! kill -0 "${PID}" 2>/dev/null; then
-        # Verify no streamlit processes remain in the group
-        if ! pgrep -g "${PGID}" -x "streamlit" >/dev/null 2>&1; then
-            break
-        fi
+        PARENT_DEAD=true
     fi
+
+    if ! pgrep -g "${PGID}" -x "streamlit" >/dev/null 2>&1; then
+        CHILDREN_DEAD=true
+    fi
+
+    # Break if both parent and children are terminated
+    if [ "$PARENT_DEAD" = "true" ] && [ "$CHILDREN_DEAD" = "true" ]; then
+        break
+    fi
+
     sleep 0.5
 done
 
-# Check if process is still running after graceful shutdown
+# Check if processes still running after graceful shutdown attempt
+PARENT_ALIVE=false
+CHILDREN_ALIVE=false
+
 if kill -0 "${PID}" 2>/dev/null; then
+    PARENT_ALIVE=true
+fi
+
+if pgrep -g "${PGID}" -x "streamlit" >/dev/null 2>&1; then
+    CHILDREN_ALIVE=true
+fi
+
+# Force kill if either parent or children still alive
+if [ "$PARENT_ALIVE" = "true" ] || [ "$CHILDREN_ALIVE" = "true" ]; then
     log_warning "Graceful shutdown timed out, forcing shutdown..."
     if ! kill -KILL -"${PGID}" 2>/dev/null; then
         log_error "Failed to send KILL signal to process group ${PGID}"
@@ -149,17 +185,21 @@ if kill -0 "${PID}" 2>/dev/null; then
     sleep 1
 fi
 
-# Final verification - check both process termination and port release
-PROCESS_DEAD=false
+# Final verification - check both parent and child process termination, plus port release
+PARENT_DEAD=false
+CHILDREN_DEAD=false
 PORT_RELEASED=false
 
 if ! kill -0 "${PID}" 2>/dev/null; then
-    # Also verify no streamlit processes remain
-    if ! pgrep -g "${PGID}" -x "streamlit" >/dev/null 2>&1; then
-        PROCESS_DEAD=true
-    fi
+    PARENT_DEAD=true
 fi
 
+# Verify no streamlit processes remain in the group
+if ! pgrep -g "${PGID}" -x "streamlit" >/dev/null 2>&1; then
+    CHILDREN_DEAD=true
+fi
+
+# Check port release
 if [ "${PORT}" != "unknown" ]; then
     if ! is_port_in_use "${PORT}"; then
         PORT_RELEASED=true
@@ -168,14 +208,17 @@ else
     PORT_RELEASED=true
 fi
 
-# Only remove state files if both process is dead and port is released
-if [ "${PROCESS_DEAD}" = "true" ] && [ "${PORT_RELEASED}" = "true" ]; then
+# Only remove state files if parent is dead, children are dead, and port is released
+if [ "${PARENT_DEAD}" = "true" ] && [ "${CHILDREN_DEAD}" = "true" ] && [ "${PORT_RELEASED}" = "true" ]; then
     log_info "Dashboard stopped"
     rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}"
     exit 0
 else
-    if [ "${PROCESS_DEAD}" = "false" ]; then
-        log_error "Dashboard process or children may still be running"
+    if [ "${PARENT_DEAD}" = "false" ]; then
+        log_error "Dashboard parent process (PID: ${PID}) may still be running"
+    fi
+    if [ "${CHILDREN_DEAD}" = "false" ]; then
+        log_error "Dashboard child processes (Streamlit) may still be running"
     fi
     if [ "${PORT_RELEASED}" = "false" ]; then
         log_error "Port ${PORT} is still in use"

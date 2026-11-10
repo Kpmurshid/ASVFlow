@@ -67,12 +67,6 @@ is_dashboard_running() {
         return 1
     fi
 
-    # Verify PID is a process group leader (PGID == PID)
-    local actual_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
-    if [ "$actual_pgid" != "$pid" ]; then
-        return 1
-    fi
-
     # Verify port is listening
     if ! (lsof -i ":${expected_port}" -sTCP:LISTEN 2>/dev/null | grep -q ":${expected_port}"); then
         if ! (ss -tuln 2>/dev/null | grep -q ":${expected_port}.*LISTEN"); then
@@ -86,13 +80,54 @@ is_dashboard_running() {
         local stored_outdir=$(cat "${OUTDIR_FILE}")
 
         if [ "${stored_project}" = "${expected_project}" ] && [ "${stored_outdir}" = "${expected_outdir}" ]; then
-            # Find streamlit process in the group and verify cmdline
-            local streamlit_pids=$(pgrep -g "$pid" -x "streamlit" 2>/dev/null || true)
+            # Find streamlit process - for legacy dashboards, verify port ownership
+            # For new dashboards with PGID file, also verify process group relationship
+            local actual_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+            local streamlit_pids=""
+
+            # If this is a process-group-managed dashboard (PGID == PID), search within group
+            if [ -n "$actual_pgid" ] && [ "$actual_pgid" = "$pid" ]; then
+                streamlit_pids=$(pgrep -g "$pid" -x "streamlit" 2>/dev/null || true)
+            else
+                # Legacy dashboard: parent may have exited, Streamlit may be reparented
+                # Verify port ownership instead of ancestry
+                # Try lsof first, then ss if lsof returns no usable PID
+                local port_owners=""
+                if command -v lsof >/dev/null 2>&1; then
+                    port_owners=$(lsof -ti ":${expected_port}" -sTCP:LISTEN 2>/dev/null || true)
+                fi
+
+                # If lsof returned nothing, try ss
+                if [ -z "$port_owners" ] && command -v ss >/dev/null 2>&1; then
+                    # Use exact local port match: :PORT with word boundary
+                    port_owners=$(ss -tlnp 2>/dev/null | awk -v port=":${expected_port}" '$4 ~ port" " || $4 ~ port"$" {print}' | grep -oP 'pid=\K[0-9]+' || true)
+                fi
+
+                if [ -n "$port_owners" ]; then
+                    # Inspect all PIDs, require unambiguous match
+                    local matching_streamlit=""
+                    local match_count=0
+                    for port_pid in $port_owners; do
+                        if [ -f "/proc/$port_pid/comm" ]; then
+                            local comm=$(cat "/proc/$port_pid/comm" 2>/dev/null || echo "")
+                            if [ "$comm" = "streamlit" ]; then
+                                matching_streamlit="$port_pid"
+                                match_count=$((match_count + 1))
+                            fi
+                        fi
+                    done
+                    # Only use if exactly one Streamlit process owns the port
+                    if [ $match_count -eq 1 ]; then
+                        streamlit_pids="$matching_streamlit"
+                    fi
+                fi
+            fi
+
             if [ -n "$streamlit_pids" ]; then
                 for spid in $streamlit_pids; do
                     if [ -f "/proc/$spid/cmdline" ]; then
                         local cmdline=$(tr '\0' ' ' < /proc/$spid/cmdline 2>/dev/null || true)
-                        # Check for dashboard app.py, port, and outdir in command line
+                        # Verify full identity: app.py, port, and outdir in command line
                         if echo "$cmdline" | grep -q "dashboard/app.py" && \
                            echo "$cmdline" | grep -q "server.port.*${expected_port}" && \
                            echo "$cmdline" | grep -q "outdir.*${expected_outdir}"; then
@@ -205,6 +240,129 @@ DASHBOARD_PID=$!
 DASHBOARD_PGID=$(ps -o pgid= -p "${DASHBOARD_PID}" 2>/dev/null | tr -d ' ')
 if [ -z "${DASHBOARD_PGID}" ] || [ "${DASHBOARD_PGID}" != "${DASHBOARD_PID}" ]; then
     log_error "Failed to create process group (PID: ${DASHBOARD_PID}, PGID: ${DASHBOARD_PGID})"
+    log_error "Attempting cleanup of launched processes..."
+
+    # Persist failure state before attempting cleanup (in case cleanup partially fails)
+    # Use a temporary directory to avoid overwriting state from a successful dashboard
+    FAILED_STATE_DIR="${DASHBOARD_DIR}.failed.${DASHBOARD_PID}"
+    mkdir -p "${FAILED_STATE_DIR}"
+    echo "${DASHBOARD_PID}" > "${FAILED_STATE_DIR}/dashboard.pid"
+    echo "${DASHBOARD_PGID:-unknown}" > "${FAILED_STATE_DIR}/dashboard.pgid"
+    echo "${ACTUAL_PORT}" > "${FAILED_STATE_DIR}/dashboard.port"
+    echo "${PROJECT_DIR}" > "${FAILED_STATE_DIR}/dashboard.project"
+    echo "${OUTDIR_ABS}" > "${FAILED_STATE_DIR}/dashboard.outdir"
+
+    CLEANUP_FAILED=false
+
+    # Determine cleanup strategy based on PGID state
+    if [ -n "${DASHBOARD_PGID}" ] && [ "${DASHBOARD_PGID}" != "${DASHBOARD_PID}" ]; then
+        # Unexpected PGID - terminate only the direct Singularity PID we launched
+        if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+            kill -TERM "${DASHBOARD_PID}" 2>/dev/null || true
+            sleep 1
+            if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+                kill -KILL "${DASHBOARD_PID}" 2>/dev/null || true
+                sleep 0.5
+            fi
+            # Verify both parent termination and no orphaned Streamlit children
+            if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+                CLEANUP_FAILED=true
+            else
+                # Parent terminated - check for orphaned Streamlit on this port
+                if lsof -i ":${ACTUAL_PORT}" -sTCP:LISTEN 2>/dev/null | grep -q ":${ACTUAL_PORT}"; then
+                    CLEANUP_FAILED=true
+                elif ss -tuln 2>/dev/null | grep -q ":${ACTUAL_PORT}.*LISTEN"; then
+                    CLEANUP_FAILED=true
+                fi
+            fi
+        fi
+    elif [ -n "${DASHBOARD_PGID}" ] && [ "${DASHBOARD_PGID}" = "${DASHBOARD_PID}" ]; then
+        # PGID matches PID - verify the process identity before signaling group
+        # Confirm DASHBOARD_PID still exists, has correct PGID, and is the Singularity command
+        if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+            CURRENT_PGID=$(ps -o pgid= -p "${DASHBOARD_PID}" 2>/dev/null | tr -d ' ')
+            if [ "$CURRENT_PGID" = "${DASHBOARD_PGID}" ] && [ -f "/proc/${DASHBOARD_PID}/cmdline" ]; then
+                PID_CMDLINE=$(tr '\0' ' ' < "/proc/${DASHBOARD_PID}/cmdline" 2>/dev/null || echo "")
+                # Verify this is the Singularity exec we launched
+                if echo "$PID_CMDLINE" | grep -q "singularity exec" && \
+                   echo "$PID_CMDLINE" | grep -q "dashboard/app.py"; then
+                    # Identity confirmed - safe to terminate the group
+                    kill -TERM -"${DASHBOARD_PGID}" 2>/dev/null || true
+                    sleep 1
+                    if pgrep -g "${DASHBOARD_PGID}" >/dev/null 2>&1; then
+                        kill -KILL -"${DASHBOARD_PGID}" 2>/dev/null || true
+                        sleep 0.5
+                    fi
+                    # Verify no processes remain in group (parent and children)
+                    if pgrep -g "${DASHBOARD_PGID}" >/dev/null 2>&1; then
+                        CLEANUP_FAILED=true
+                    fi
+                    # Also verify no Streamlit process on the port
+                    if ! pgrep -g "${DASHBOARD_PGID}" >/dev/null 2>&1; then
+                        if lsof -i ":${ACTUAL_PORT}" -sTCP:LISTEN 2>/dev/null | grep -q ":${ACTUAL_PORT}"; then
+                            CLEANUP_FAILED=true
+                        elif ss -tuln 2>/dev/null | grep -q ":${ACTUAL_PORT}.*LISTEN"; then
+                            CLEANUP_FAILED=true
+                        fi
+                    fi
+                else
+                    # Process exists but not the one we launched - do not signal
+                    log_error "Process ${DASHBOARD_PID} exists but is not the expected Singularity command"
+                    CLEANUP_FAILED=true
+                fi
+            else
+                # PGID changed or process no longer exists - try to cleanup what remains
+                if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+                    kill -TERM "${DASHBOARD_PID}" 2>/dev/null || true
+                    sleep 1
+                    if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+                        kill -KILL "${DASHBOARD_PID}" 2>/dev/null || true
+                        sleep 0.5
+                    fi
+                    if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+                        CLEANUP_FAILED=true
+                    fi
+                fi
+                # Check port regardless
+                if lsof -i ":${ACTUAL_PORT}" -sTCP:LISTEN 2>/dev/null | grep -q ":${ACTUAL_PORT}"; then
+                    CLEANUP_FAILED=true
+                elif ss -tuln 2>/dev/null | grep -q ":${ACTUAL_PORT}.*LISTEN"; then
+                    CLEANUP_FAILED=true
+                fi
+            fi
+        fi
+    else
+        # No PGID - try direct PID cleanup
+        if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+            kill -TERM "${DASHBOARD_PID}" 2>/dev/null || true
+            sleep 1
+            if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+                kill -KILL "${DASHBOARD_PID}" 2>/dev/null || true
+                sleep 0.5
+            fi
+            # Verify both parent and port
+            if kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
+                CLEANUP_FAILED=true
+            else
+                # Parent gone - check port for orphaned child
+                if lsof -i ":${ACTUAL_PORT}" -sTCP:LISTEN 2>/dev/null | grep -q ":${ACTUAL_PORT}"; then
+                    CLEANUP_FAILED=true
+                elif ss -tuln 2>/dev/null | grep -q ":${ACTUAL_PORT}.*LISTEN"; then
+                    CLEANUP_FAILED=true
+                fi
+            fi
+        fi
+    fi
+
+    if [ "$CLEANUP_FAILED" = "true" ]; then
+        log_error "Failed to terminate all launched processes"
+        log_error "Manual cleanup required for PID ${DASHBOARD_PID} and/or port ${ACTUAL_PORT}"
+        log_error "State directory preserved: ${FAILED_STATE_DIR}"
+    else
+        log_error "Cleanup completed"
+        rm -rf "${FAILED_STATE_DIR}"
+    fi
+
     log_error "Check log file: ${LOG_FILE}"
     exit 1
 fi
@@ -220,6 +378,14 @@ echo "${OUTDIR_ABS}" > "${OUTDIR_FILE}"
 log_info "Waiting for dashboard to start..."
 STARTUP_SUCCESS=false
 
+# Build health check URL based on bind address (once, outside loop)
+# Wildcard addresses are not directly reachable - use localhost for health check
+if [ "${DASHBOARD_BIND_ADDRESS}" = "0.0.0.0" ] || [ "${DASHBOARD_BIND_ADDRESS}" = "::" ]; then
+    HEALTH_CHECK_URL="http://127.0.0.1:${ACTUAL_PORT}"
+else
+    HEALTH_CHECK_URL="http://${DASHBOARD_BIND_ADDRESS}:${ACTUAL_PORT}"
+fi
+
 for i in $(seq 1 30); do
     if ! kill -0 "${DASHBOARD_PID}" 2>/dev/null; then
         log_error "Dashboard process died during startup"
@@ -228,7 +394,7 @@ for i in $(seq 1 30); do
         exit 1
     fi
 
-    if curl -s -o /dev/null "http://localhost:${ACTUAL_PORT}" 2>/dev/null; then
+    if curl -s -o /dev/null "${HEALTH_CHECK_URL}" 2>/dev/null; then
         STARTUP_SUCCESS=true
         break
     fi
