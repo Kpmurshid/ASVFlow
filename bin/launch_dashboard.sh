@@ -74,69 +74,76 @@ is_dashboard_running() {
         fi
     fi
 
-    # Verify project and outdir match stored values
+    # Determine verification strategy based on available metadata files
+    local has_metadata=false
     if [ -f "${PROJECT_FILE}" ] && [ -f "${OUTDIR_FILE}" ]; then
         local stored_project=$(cat "${PROJECT_FILE}")
         local stored_outdir=$(cat "${OUTDIR_FILE}")
-
+        
+        # For dashboards with metadata, verify it matches
         if [ "${stored_project}" = "${expected_project}" ] && [ "${stored_outdir}" = "${expected_outdir}" ]; then
-            # Find streamlit process - for legacy dashboards, verify port ownership
-            # For new dashboards with PGID file, also verify process group relationship
-            local actual_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
-            local streamlit_pids=""
+            has_metadata=true
+        else
+            # Metadata exists but doesn't match - not our dashboard
+            return 1
+        fi
+    fi
+    
+    # Find streamlit process - strategy depends on PGID and metadata availability
+    local actual_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+    local streamlit_pids=""
 
-            # If this is a process-group-managed dashboard (PGID == PID), search within group
-            if [ -n "$actual_pgid" ] && [ "$actual_pgid" = "$pid" ]; then
-                streamlit_pids=$(pgrep -g "$pid" -x "streamlit" 2>/dev/null || true)
-            else
-                # Legacy dashboard: parent may have exited, Streamlit may be reparented
-                # Verify port ownership instead of ancestry
-                # Try lsof first, then ss if lsof returns no usable PID
-                local port_owners=""
-                if command -v lsof >/dev/null 2>&1; then
-                    port_owners=$(lsof -ti ":${expected_port}" -sTCP:LISTEN 2>/dev/null || true)
-                fi
+    # If this is a process-group-managed dashboard (PGID == PID), search within group
+    if [ -n "$actual_pgid" ] && [ "$actual_pgid" = "$pid" ]; then
+        streamlit_pids=$(pgrep -g "$pid" -x "streamlit" 2>/dev/null || true)
+    else
+        # Legacy dashboard or parent exited: verify port ownership instead of ancestry
+        # Try lsof first, then ss if lsof returns no usable PID
+        local port_owners=""
+        if command -v lsof >/dev/null 2>&1; then
+            port_owners=$(lsof -ti ":${expected_port}" -sTCP:LISTEN 2>/dev/null || true)
+        fi
+        
+        # If lsof returned nothing, try ss
+        if [ -z "$port_owners" ] && command -v ss >/dev/null 2>&1; then
+            # Use exact local port match: :PORT with word boundary
+            port_owners=$(ss -tlnp 2>/dev/null | awk -v port=":${expected_port}" '$4 ~ port" " || $4 ~ port"$" {print}' | grep -oP 'pid=\K[0-9]+' || true)
+        fi
 
-                # If lsof returned nothing, try ss
-                if [ -z "$port_owners" ] && command -v ss >/dev/null 2>&1; then
-                    # Use exact local port match: :PORT with word boundary
-                    port_owners=$(ss -tlnp 2>/dev/null | awk -v port=":${expected_port}" '$4 ~ port" " || $4 ~ port"$" {print}' | grep -oP 'pid=\K[0-9]+' || true)
-                fi
-
-                if [ -n "$port_owners" ]; then
-                    # Inspect all PIDs, require unambiguous match
-                    local matching_streamlit=""
-                    local match_count=0
-                    for port_pid in $port_owners; do
-                        if [ -f "/proc/$port_pid/comm" ]; then
-                            local comm=$(cat "/proc/$port_pid/comm" 2>/dev/null || echo "")
-                            if [ "$comm" = "streamlit" ]; then
-                                matching_streamlit="$port_pid"
-                                match_count=$((match_count + 1))
-                            fi
-                        fi
-                    done
-                    # Only use if exactly one Streamlit process owns the port
-                    if [ $match_count -eq 1 ]; then
-                        streamlit_pids="$matching_streamlit"
+        if [ -n "$port_owners" ]; then
+            # Inspect all PIDs, require unambiguous match
+            local matching_streamlit=""
+            local match_count=0
+            for port_pid in $port_owners; do
+                if [ -f "/proc/$port_pid/comm" ]; then
+                    local comm=$(cat "/proc/$port_pid/comm" 2>/dev/null || echo "")
+                    if [ "$comm" = "streamlit" ]; then
+                        matching_streamlit="$port_pid"
+                        match_count=$((match_count + 1))
                     fi
                 fi
-            fi
-
-            if [ -n "$streamlit_pids" ]; then
-                for spid in $streamlit_pids; do
-                    if [ -f "/proc/$spid/cmdline" ]; then
-                        local cmdline=$(tr '\0' ' ' < /proc/$spid/cmdline 2>/dev/null || true)
-                        # Verify full identity: app.py, port, and outdir in command line
-                        if echo "$cmdline" | grep -q "dashboard/app.py" && \
-                           echo "$cmdline" | grep -q "server.port.*${expected_port}" && \
-                           echo "$cmdline" | grep -q "outdir.*${expected_outdir}"; then
-                            return 0
-                        fi
-                    fi
-                done
+            done
+            # Only use if exactly one Streamlit process owns the port
+            if [ $match_count -eq 1 ]; then
+                streamlit_pids="$matching_streamlit"
             fi
         fi
+    fi
+
+    # Verify streamlit process identity via cmdline
+    if [ -n "$streamlit_pids" ]; then
+        for spid in $streamlit_pids; do
+            if [ -f "/proc/$spid/cmdline" ]; then
+                local cmdline=$(tr '\0' ' ' < /proc/$spid/cmdline 2>/dev/null || true)
+                # Verify full identity: app.py, port, project path and outdir in command line
+                if echo "$cmdline" | grep -q "dashboard/app.py" && \
+                   echo "$cmdline" | grep -q "server.port.*${expected_port}" && \
+                   echo "$cmdline" | grep -q "${expected_project}" && \
+                   echo "$cmdline" | grep -q "outdir.*${expected_outdir}"; then
+                    return 0
+                fi
+            fi
+        done
     fi
 
     return 1
