@@ -122,7 +122,11 @@ def read_task(pid, proc_fd=None):
         uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
         uid = int(uid_line.split()[1])
         cmdline = read_bytes("cmdline")
-        exe = os.readlink("exe", dir_fd=proc_fd)
+        try:
+            exe = os.readlink("exe", dir_fd=proc_fd)
+        except OSError:
+            # Permission denied or inaccessible exe link - not our dashboard
+            return None
         return {
             "state": fields[0],
             "pgrp": int(fields[2]),
@@ -190,12 +194,16 @@ def is_dashboard_member(task, project, port, outdir, expected_uid, pgid):
     )
 
 
-action, pid_text, pgid_text, port, project, outdir, identity_path, *extra = sys.argv[1:]
+action, pid_text, pgid_text, port, project, outdir, *rest = sys.argv[1:]
 if not pid_text.isdecimal() or not pgid_text.isdecimal():
     fail("PID and PGID must be decimal integers")
 pid, pgid = int(pid_text), int(pgid_text)
 
 if action == "create":
+    if len(rest) < 1:
+        fail("create action requires identity_path")
+    identity_path = rest[0]
+    extra = rest[1:]
     deadline = time.monotonic() + 3
     task = None
     while time.monotonic() < deadline:
@@ -363,7 +371,10 @@ def read_group():
         except (FileNotFoundError, ProcessLookupError):
             continue
         task = read_task(task_pid, proc_fd)
-        if not task or task["pgrp"] != pgid or task["state"] in ("Z", "X"):
+        if not task:
+            os.close(proc_fd)
+            fail(f"Cannot verify process {task_pid} in the target process group (inaccessible or parsing error)")
+        if task["pgrp"] != pgid or task["state"] in ("Z", "X"):
             os.close(proc_fd)
             continue
         if task["session"] != pgid:
@@ -401,11 +412,19 @@ def close_group(group):
 
 
 if action == "inspect":
+    if len(rest) < 1:
+        fail("inspect action requires identity_path")
+    identity_path = rest[0]
     group = read_group()
     close_group(group)
     raise SystemExit(0 if group else 2)
 
-if action != "signal" or len(extra) != 1 or extra[0] not in ("TERM", "KILL"):
+if action == "signal":
+    if len(rest) < 2 or rest[1] not in ("TERM", "KILL"):
+        fail("signal action requires identity_path and signal name (TERM or KILL)")
+    identity_path = rest[0]
+    extra = [rest[1]]
+elif action not in ("create", "legacy-inspect", "inspect"):
     fail("Invalid dashboard process-helper action")
 if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
     fail("This Python/Linux runtime lacks pidfd signaling; refusing numeric-PID signaling")

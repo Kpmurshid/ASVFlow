@@ -70,14 +70,21 @@ def read_task(pid, proc_fd=None):
         fields = raw_stat[raw_stat.rfind(")") + 2:].split()
         status = read_text("status")
         uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
+        uid = int(uid_line.split()[1])
+        cmdline = read_bytes("cmdline")
+        try:
+            exe = os.readlink("exe", dir_fd=proc_fd)
+        except OSError:
+            # Permission denied or inaccessible exe link - not our dashboard
+            return None
         return {
             "state": fields[0],
             "pgrp": int(fields[2]),
             "session": int(fields[3]),
             "start_ticks": int(fields[19]),
-            "uid": int(uid_line.split()[1]),
-            "exe": os.readlink("exe", dir_fd=proc_fd),
-            "cmdline": read_bytes("cmdline"),
+            "uid": uid,
+            "exe": exe,
+            "cmdline": cmdline,
         }
     except (FileNotFoundError, ProcessLookupError):
         return None
@@ -227,7 +234,10 @@ def read_group():
         except (FileNotFoundError, ProcessLookupError):
             continue
         task = read_task(task_pid, proc_fd)
-        if not task or task["pgrp"] != pgid or task["state"] in ("Z", "X"):
+        if not task:
+            os.close(proc_fd)
+            fail(f"Cannot verify process {task_pid} in the target process group (inaccessible or parsing error)")
+        if task["pgrp"] != pgid or task["state"] in ("Z", "X"):
             os.close(proc_fd)
             continue
         if task["session"] != pgid:
