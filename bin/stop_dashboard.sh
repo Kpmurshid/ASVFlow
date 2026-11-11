@@ -37,6 +37,7 @@ dashboard_process_helper() {
     python3 - "$@" <<'PY'
 import hashlib
 import json
+import errno
 import os
 import re
 import signal
@@ -74,9 +75,14 @@ def read_task(pid, proc_fd=None):
         cmdline = read_bytes("cmdline")
         try:
             exe = os.readlink("exe", dir_fd=proc_fd)
-        except OSError:
-            # Permission denied or inaccessible exe link - not our dashboard
+            exe_state = "readable"
+        except FileNotFoundError:
             return None
+        except OSError as error:
+            if error.errno not in (errno.EACCES, errno.EPERM):
+                raise
+            exe = None
+            exe_state = "inaccessible"
         return {
             "state": fields[0],
             "pgrp": int(fields[2]),
@@ -84,6 +90,7 @@ def read_task(pid, proc_fd=None):
             "start_ticks": int(fields[19]),
             "uid": uid,
             "exe": exe,
+            "exe_state": exe_state,
             "cmdline": cmdline,
         }
     except (FileNotFoundError, ProcessLookupError):
@@ -116,6 +123,8 @@ def has_dashboard_command(task, project, port, outdir):
 
 
 def is_dashboard_executable(task):
+    if task["exe_state"] != "readable":
+        return False
     executable = os.path.basename(task["exe"])
     return executable == "streamlit" or re.fullmatch(
         r"python(?:\d+(?:\.\d+)*)?", executable
@@ -164,7 +173,7 @@ except (OSError, ValueError, json.JSONDecodeError) as error:
 
 expected_keys = {
     "version", "pid", "pgid", "uid", "boot_id", "start_ticks", "exe",
-    "cmdline_sha256", "project", "outdir", "port",
+    "cmdline_sha256", "exe_state", "project", "outdir", "port",
 }
 metadata_dir = os.stat(os.path.dirname(identity_path), follow_symlinks=False)
 if (
@@ -184,8 +193,11 @@ if (
     or identity["port"] != port
     or identity["boot_id"] != open("/proc/sys/kernel/random/boot_id", encoding="ascii").read().strip()
     or identity["start_ticks"] <= 0
-    or not isinstance(identity["exe"], str)
-    or not os.path.isabs(identity["exe"])
+    or identity["exe_state"] not in ("readable", "inaccessible")
+    or (identity["exe_state"] == "readable" and (
+        not isinstance(identity["exe"], str) or not os.path.isabs(identity["exe"])
+    ))
+    or (identity["exe_state"] == "inaccessible" and identity["exe"] is not None)
     or not isinstance(identity["cmdline_sha256"], str)
     or len(identity["cmdline_sha256"]) != 64
     or any(character not in "0123456789abcdef" for character in identity["cmdline_sha256"])
@@ -204,9 +216,13 @@ def leader_matches(task):
         and task["session"] == pgid
         and task["uid"] == identity["uid"]
         and task["start_ticks"] == identity["start_ticks"]
+        and task["exe_state"] == identity["exe_state"]
         and task["exe"] == identity["exe"]
         and hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
-        and os.path.basename(task["exe"]) in ("singularity", "apptainer")
+        and (
+            identity["exe_state"] == "inaccessible"
+            or os.path.basename(task["exe"]) in ("singularity", "apptainer")
+        )
         and "exec" in argv_for(task)
         and has_dashboard_command(task, project, port, outdir)
     )

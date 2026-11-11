@@ -41,7 +41,10 @@ workflow {
             log.info ""
 
             // Launch dashboard asynchronously
-            def proc = dashboard_cmd.execute()
+            def dashboard_env = System.getenv().collect { key, value -> "${key}=${value}" }
+            dashboard_env.removeAll { it.startsWith('DASHBOARD_BIND_ADDRESS=') }
+            dashboard_env << "DASHBOARD_BIND_ADDRESS=${params.dashboard_bind_address}"
+            def proc = dashboard_cmd.execute(null, dashboard_env)
             def dashboard_stdout = new StringBuffer()
             def dashboard_stderr = new StringBuffer()
             proc.consumeProcessOutput(dashboard_stdout, dashboard_stderr)
