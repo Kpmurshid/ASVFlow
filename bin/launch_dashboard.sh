@@ -62,6 +62,16 @@ check_port() {
     return 0
 }
 
+check_port_free_verified() {
+    local socket_table
+    command -v ss >/dev/null 2>&1 || return 2
+    socket_table=$(ss -H -tuln 2>/dev/null) || return 2
+    if awk -v port=":$1" '$5 ~ (port "$" ) { found = 1 } END { exit !found }' <<< "${socket_table}"; then
+        return 1
+    fi
+    return 0
+}
+
 cleanup_verified_dashboard_state() {
     local port="$1"
     if ! check_port "${port}"; then
@@ -229,6 +239,36 @@ if action == "create":
         if os.path.exists(temporary):
             os.unlink(temporary)
     raise SystemExit(0)
+
+if action == "legacy-inspect":
+    if pid <= 0 or pgid <= 0:
+        fail("PID and PGID must be positive integers")
+
+    def process_group(task_pid):
+        try:
+            with open(f"/proc/{task_pid}/stat", "rb") as stream:
+                raw_stat = stream.read().decode()
+            fields = raw_stat[raw_stat.rfind(")") + 2:].split()
+            if len(fields) < 3:
+                fail(f"Cannot parse process metadata for {task_pid}")
+            return int(fields[2])
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+        except (OSError, ValueError, IndexError) as error:
+            fail(f"Cannot inspect process {task_pid}: {error}")
+
+    try:
+        processes = list(os.scandir("/proc"))
+    except OSError as error:
+        fail(f"Cannot inspect /proc: {error}")
+    for entry in processes:
+        if not entry.name.isdecimal():
+            continue
+        task_pid = int(entry.name)
+        task_pgid = process_group(task_pid)
+        if task_pgid is not None and (task_pid == pid or task_pgid == pgid):
+            raise SystemExit(0)
+    raise SystemExit(2)
 
 try:
     fd = os.open(identity_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -586,8 +626,36 @@ if [ -f "${PID_FILE}" ] && [ -f "${PORT_FILE}" ]; then
     # Convert to absolute paths for comparison
     OUTDIR_ABS_CHECK="$(cd "${OUTDIR}" 2>/dev/null && pwd || echo "${OUTDIR}")"
 
+    # Missing identity metadata can only use read-only legacy recovery.
+    if [ ! -e "${IDENTITY_FILE}" ] && [ ! -L "${IDENTITY_FILE}" ]; then
+        if dashboard_process_helper legacy-inspect "${OLD_PID}" "${OLD_PGID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}" "${IDENTITY_FILE}"; then
+            log_error "The stored launcher PID or process group is active"
+            log_error "Refusing cleanup without confirmed termination"
+            exit 1
+        else
+            HELPER_STATUS=$?
+            if [ "${HELPER_STATUS}" -eq 2 ]; then
+                if check_port_free_verified "${OLD_PORT}"; then
+                    log_warning "Legacy process group is absent and port ${OLD_PORT} is free; cleaning stale state"
+                    rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}" "${BIND_ADDRESS_FILE}" "${IDENTITY_FILE}"
+                else
+                    PORT_CHECK_STATUS=$?
+                    if [ "${PORT_CHECK_STATUS}" -eq 1 ]; then
+                        log_error "Port ${OLD_PORT} remains in use"
+                    else
+                        log_error "Could not confirm port ${OLD_PORT} is free"
+                    fi
+                    log_error "State files preserved in: ${DASHBOARD_DIR}"
+                    exit 1
+                fi
+            else
+                log_error "Could not verify legacy PID and process-group absence"
+                log_error "State files preserved in: ${DASHBOARD_DIR}"
+                exit 1
+            fi
+        fi
     # First check if the process group is still alive
-    if kill -0 "${OLD_PID}" 2>/dev/null; then
+    elif kill -0 "${OLD_PID}" 2>/dev/null; then
         # Process exists, verify it's our dashboard
         if is_dashboard_running "${OLD_PID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}"; then
             # Dashboard is running and verified - check if configuration matches
