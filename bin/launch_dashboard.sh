@@ -254,7 +254,14 @@ if action == "legacy-inspect":
             return int(fields[2])
         except (FileNotFoundError, ProcessLookupError):
             return None
-        except (OSError, ValueError, IndexError) as error:
+        except OSError:
+            try:
+                return os.getpgid(task_pid)
+            except (FileNotFoundError, ProcessLookupError):
+                return None
+            except OSError as error:
+                fail(f"Cannot determine process-group membership for {task_pid}: {error}")
+        except (ValueError, IndexError) as error:
             fail(f"Cannot inspect process {task_pid}: {error}")
 
     try:
