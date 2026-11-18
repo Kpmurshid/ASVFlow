@@ -8,8 +8,18 @@ set -e
 OUTDIR="${1:-results}"
 PORT="${2:-8501}"
 DASHBOARD_SIF="${3:-tools/asvflow-dashboard.sif}"
-DASHBOARD_BIND_ADDRESS="${DASHBOARD_BIND_ADDRESS:-127.0.0.1}"
+DASHBOARD_BIND_ADDRESS="${DASHBOARD_BIND_ADDRESS:-}"
+if [ -z "${DASHBOARD_BIND_ADDRESS}" ]; then
+    if command -v tailscale >/dev/null 2>&1; then
+        TAILSCALE_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+        if [[ "${TAILSCALE_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            DASHBOARD_BIND_ADDRESS="${TAILSCALE_IP}"
+        fi
+    fi
+    DASHBOARD_BIND_ADDRESS="${DASHBOARD_BIND_ADDRESS:-127.0.0.1}"
+fi
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+DASHBOARD_SIF_ABS="$(cd "$(dirname "${DASHBOARD_SIF}")" && pwd)/$(basename "${DASHBOARD_SIF}")"
 
 # Dashboard state directory
 DASHBOARD_DIR="${OUTDIR}/.asvflow_dashboard"
@@ -123,6 +133,15 @@ def read_task(pid, proc_fd=None):
         uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
         uid = int(uid_line.split()[1])
         cmdline = read_bytes("cmdline")
+        environ = read_bytes("environ")
+        container_env = {}
+        for entry in environ.split(b"\0"):
+            key, separator, value = entry.partition(b"=")
+            if separator and key in (
+                b"APPTAINER_CONTAINER", b"SINGULARITY_CONTAINER",
+                b"APPTAINER_COMMAND", b"SINGULARITY_COMMAND",
+            ):
+                container_env[key.decode("ascii")] = os.fsdecode(value)
         try:
             exe = os.readlink("exe", dir_fd=proc_fd)
             exe_state = "readable"
@@ -136,6 +155,7 @@ def read_task(pid, proc_fd=None):
             exe_state = "inaccessible"
         return {
             "state": fields[0],
+            "ppid": int(fields[1]),
             "pgrp": int(fields[2]),
             "session": int(fields[3]),
             "start_ticks": int(fields[19]),
@@ -143,6 +163,7 @@ def read_task(pid, proc_fd=None):
             "exe": exe,
             "exe_state": exe_state,
             "cmdline": cmdline,
+            "container_env": container_env,
         }
     except (FileNotFoundError, ProcessLookupError):
         return None
@@ -193,6 +214,7 @@ def is_dashboard_member(task, project, port, outdir, expected_uid, pgid):
         return False
     return (
         task["uid"] == expected_uid
+        and task["ppid"] == pgid
         and task["pgrp"] == pgid
         and task["session"] == pgid
         and is_dashboard_executable(task)
@@ -209,33 +231,7 @@ if not pid_text.isdecimal() or not pgid_text.isdecimal():
     fail("PID and PGID must be decimal integers")
 pid, pgid = int(pid_text), int(pgid_text)
 
-if action == "create":
-    if len(rest) < 1:
-        fail("create action requires identity_path")
-    identity_path = rest[0]
-    extra = rest[1:]
-    deadline = time.monotonic() + 3
-    task = None
-    while time.monotonic() < deadline:
-        task = read_task(pid)
-        if (
-            task
-            and task["pgrp"] == pgid == pid
-            and task["session"] == pgid
-            and task["uid"] == os.getuid()
-            and task["exe_state"] in ("readable", "inaccessible")
-            and (
-                task["exe_state"] == "inaccessible"
-                or os.path.basename(task["exe"]) in ("singularity", "apptainer")
-            )
-            and "exec" in argv_for(task)
-            and has_dashboard_command(task, project, port, outdir)
-        ):
-            break
-        time.sleep(0.05)
-    else:
-        fail("Cannot establish launcher identity and session ownership")
-
+def write_identity(identity_path, task):
     identity = {
         "version": 1,
         "pid": pid,
@@ -251,16 +247,237 @@ if action == "create":
         "port": port,
     }
     directory = os.path.dirname(identity_path)
+    directory_stat = os.stat(directory, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(directory_stat.st_mode)
+        or directory_stat.st_uid != os.getuid()
+        or directory_stat.st_mode & 0o022
+    ):
+        fail("Dashboard state directory has unsafe type, owner, or permissions")
+    if os.path.lexists(identity_path):
+        fail("Identity path already exists; refusing to overwrite ownership metadata")
     fd, temporary = tempfile.mkstemp(prefix=".dashboard.identity.", dir=directory)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(identity, stream)
             stream.write("\n")
-        os.replace(temporary, identity_path)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # link() publishes atomically and fails if another launcher already
+        # created the destination; unlike replace(), it cannot clobber it.
+        os.link(temporary, identity_path, follow_symlinks=False)
+        os.unlink(temporary)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+if action == "create":
+    if len(rest) != 4:
+        fail("create action requires identity, container, project metadata, and output metadata paths")
+    identity_path, expected_container, project_file, outdir_file = rest
+    deadline = time.monotonic() + 3
+    task = None
+    while time.monotonic() < deadline:
+        task = read_task(pid)
+        if (
+            task
+            and task["pgrp"] == pgid == pid
+            and task["session"] == pgid
+            and task["uid"] == os.getuid()
+            and task["exe_state"] in ("readable", "inaccessible")
+            and (
+                task["exe_state"] == "inaccessible"
+                or os.path.basename(task["exe"]) in ("singularity", "apptainer", "starter")
+            )
+            and "exec" in argv_for(task)
+            and has_dashboard_command(task, project, port, outdir)
+        ):
+            break
+        time.sleep(0.05)
+    else:
+        if (
+            task
+            and task["exe_state"] == "readable"
+            and os.path.basename(task["exe"]) == "starter"
+        ):
+            # Apptainer exposes its starter process as the session leader and
+            # places the dashboard command in the verified container child.
+            action = "adopt-legacy"
+            rest = [identity_path, expected_container, project_file, outdir_file]
+        else:
+            fail("Cannot establish launcher identity and session ownership")
+
+    if action == "create":
+        write_identity(identity_path, task)
+        raise SystemExit(0)
+
+if action == "adopt-legacy":
+    if len(rest) != 4:
+        fail("Legacy adoption requires identity, container, project metadata, and output metadata paths")
+    identity_path, expected_container, project_file, outdir_file = rest
+    if os.path.exists(identity_path) or os.path.islink(identity_path):
+        fail("Identity path already exists; refusing to replace existing ownership metadata")
+    if pid <= 0 or pgid != pid:
+        fail("Legacy state does not identify a session-leader PID/PGID pair")
+    if not port.isdecimal() or not 1 <= int(port) <= 65535:
+        fail(f"Legacy dashboard port is invalid: {port!r}")
+    metadata_fds = []
+    metadata_records = []
+    for metadata_path, expected_value, label in (
+        (project_file, project, "project"),
+        (outdir_file, outdir, "output directory"),
+    ):
+        try:
+            metadata_fd = os.open(metadata_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            metadata_stat = os.fstat(metadata_fd)
+            with os.fdopen(os.dup(metadata_fd), "r", encoding="utf-8") as metadata_stream:
+                metadata_value = metadata_stream.read().strip()
+        except OSError as error:
+            fail(f"Cannot securely read legacy {label} ownership metadata: {error}")
+        if (
+            not stat.S_ISREG(metadata_stat.st_mode)
+            or metadata_stat.st_nlink != 1
+            or metadata_stat.st_uid != os.getuid()
+            or metadata_value != expected_value
+        ):
+            fail(f"Legacy {label} ownership metadata must be a single-link regular file owned by this user and match the requested path")
+        metadata_fds.append(metadata_fd)
+        metadata_records.append((metadata_path, metadata_stat.st_dev, metadata_stat.st_ino))
+
+    leader = read_task(pid)
+    if not leader or leader["state"] in ("Z", "X"):
+        fail(f"Legacy launcher PID {pid} is absent or not live")
+    if leader["uid"] != os.getuid():
+        fail(f"Legacy launcher owner UID {leader['uid']} does not match current UID {os.getuid()}")
+    if leader["pgrp"] != pgid or leader["session"] != pgid:
+        fail("Legacy launcher is not the recorded process-group and session leader")
+    if leader["exe_state"] != "readable" or os.path.basename(leader["exe"]) not in ("starter", "apptainer", "singularity"):
+        fail(f"Legacy launcher executable is not a readable Apptainer/Singularity runtime: {leader['exe']}")
+
+    members = []
+    dashboard_pids = []
+    dashboard_snapshot = None
+    try:
+        entries = list(os.scandir("/proc"))
+    except OSError as error:
+        fail(f"Cannot enumerate processes for legacy adoption: {error}")
+    for entry in entries:
+        if not entry.name.isdecimal():
+            continue
+        member_pid = int(entry.name)
+        try:
+            with open(f"/proc/{member_pid}/stat", "rb") as stream:
+                raw_stat = stream.read().decode()
+            stat_fields = raw_stat[raw_stat.rfind(")") + 2:].split()
+            if len(stat_fields) < 4 or int(stat_fields[2]) != pgid:
+                continue
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except (OSError, ValueError, IndexError) as error:
+            fail(f"Cannot establish process-group membership for {member_pid}: {error}")
+        try:
+            task = read_task(member_pid)
+        except SystemExit:
+            raise
+        if task is None or task["pgrp"] != pgid or task["state"] in ("Z", "X"):
+            continue
+        if task["session"] != pgid:
+            fail(f"Process {member_pid} in the legacy group has an unexpected session")
+        if member_pid == pid:
+            if task != leader:
+                fail("Legacy launcher changed while it was being inspected")
+            members.append(task)
+            continue
+
+        argv = argv_for(task)
+        app = os.path.join(project, "dashboard", "app.py")
+        outdir_index = argv.index("--outdir") if "--outdir" in argv else -1
+        executable = os.path.basename(task["exe"] or "")
+        container_paths = {
+            task["container_env"].get("APPTAINER_CONTAINER"),
+            task["container_env"].get("SINGULARITY_CONTAINER"),
+        }
+        container_paths.discard(None)
+        valid_member = (
+            task["uid"] == leader["uid"]
+            and task["ppid"] == pid
+            and task["pgrp"] == pgid
+            and task["session"] == pgid
+            and task["exe_state"] == "readable"
+            and re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", executable) is not None
+            and app in argv
+            and "run" in argv[:argv.index(app)]
+            and f"--server.port={port}" in argv
+            and outdir_index >= 0
+            and outdir_index + 1 < len(argv)
+            and argv[outdir_index + 1] == outdir
+            and container_paths == {expected_container}
+            and task["container_env"].get("APPTAINER_COMMAND", task["container_env"].get("SINGULARITY_COMMAND")) == "exec"
+        )
+        if not valid_member:
+            fail(f"Process {member_pid} shares the legacy session but is not the expected dashboard container child")
+        members.append(task)
+        dashboard_pids.append(member_pid)
+        dashboard_snapshot = task
+
+    if not any(task["ppid"] == pid and os.path.join(project, "dashboard", "app.py") in argv_for(task) for task in members):
+        fail("No direct Streamlit child was verified for the recorded launcher")
+    if len(members) < 2:
+        fail("Legacy process group did not contain both the runtime leader and dashboard child")
+
+    # Confirm that the verified Streamlit child itself owns the requested listening socket.
+    port_hex = f"{int(port):04X}"
+    listening_inodes = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table, encoding="ascii") as stream:
+                next(stream, None)
+                for line in stream:
+                    fields = line.split()
+                    if len(fields) > 9 and fields[1].rsplit(":", 1)[-1].upper() == port_hex and fields[3] == "0A":
+                        listening_inodes.add(fields[9])
+        except OSError as error:
+            fail(f"Cannot verify the listening socket in {table}: {error}")
+    if len(dashboard_pids) != 1:
+        fail(f"Expected exactly one verified dashboard child; found {len(dashboard_pids)}")
+    dashboard_pid = dashboard_pids[0]
+    try:
+        owned_inodes = set()
+        for fd_name in os.listdir(f"/proc/{dashboard_pid}/fd"):
+            target = os.readlink(f"/proc/{dashboard_pid}/fd/{fd_name}")
+            if target.startswith("socket:[") and target.endswith("]"):
+                owned_inodes.add(target[8:-1])
+    except OSError as error:
+        fail(f"Cannot verify sockets owned by dashboard child {dashboard_pid}: {error}")
+    if not listening_inodes.intersection(owned_inodes):
+        fail(f"Verified dashboard child {dashboard_pid} does not own a LISTEN socket on port {port}")
+
+    current = read_task(pid)
+    if current != leader:
+        fail("Legacy launcher changed during verification")
+    if read_task(dashboard_pid) != dashboard_snapshot:
+        fail("Verified dashboard child changed during verification")
+    state_dir = os.path.dirname(identity_path)
+    state_stat = os.stat(state_dir, follow_symlinks=False)
+    if not stat.S_ISDIR(state_stat.st_mode) or state_stat.st_uid != os.getuid():
+        fail("Legacy dashboard state directory is not a user-owned directory")
+    for metadata_path, device, inode in metadata_records:
+        path_stat = os.stat(metadata_path, follow_symlinks=False)
+        if path_stat.st_dev != device or path_stat.st_ino != inode:
+            fail("Legacy ownership metadata changed during verification")
+    os.chmod(state_dir, 0o700, follow_symlinks=False)
+    for metadata_fd in metadata_fds:
+        os.fchmod(metadata_fd, 0o600)
+        os.close(metadata_fd)
+    write_identity(identity_path, leader)
+    print("Verified legacy dashboard ownership and atomically wrote identity metadata")
     raise SystemExit(0)
 
 if action == "legacy-inspect":
@@ -299,6 +516,19 @@ if action == "legacy-inspect":
         if task_pgid is not None and (task_pid == pid or task_pgid == pgid):
             raise SystemExit(0)
     raise SystemExit(2)
+
+if action == "inspect":
+    if len(rest) < 1:
+        fail("inspect action requires identity_path")
+    identity_path = rest[0]
+    extra = rest[1:]
+elif action == "signal":
+    if len(rest) < 2 or rest[1] not in ("TERM", "KILL"):
+        fail("signal action requires identity_path and signal name (TERM or KILL)")
+    identity_path = rest[0]
+    extra = [rest[1]]
+else:
+    fail("Invalid dashboard process-helper action")
 
 try:
     fd = os.open(identity_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -352,6 +582,13 @@ if (
 
 
 def leader_matches(task):
+    argv = argv_for(task)
+    executable = os.path.basename(task["exe"] or "")
+    runtime_parent = (
+        executable == "starter"
+        and len(argv) == 1
+        and argv[0] == "Apptainer runtime parent: asvflow-dashboard.sif"
+    )
     return bool(
         task
         and task["state"] not in ("Z", "X")
@@ -364,10 +601,12 @@ def leader_matches(task):
         and hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
         and (
             identity["exe_state"] == "inaccessible"
-            or os.path.basename(task["exe"]) in ("singularity", "apptainer")
+            or executable in ("singularity", "apptainer", "starter")
         )
-        and "exec" in argv_for(task)
-        and has_dashboard_command(task, project, port, outdir)
+        and (
+            ("exec" in argv and has_dashboard_command(task, project, port, outdir))
+            or runtime_parent
+        )
     )
 
 
@@ -434,19 +673,11 @@ def close_group(group):
 
 
 if action == "inspect":
-    if len(rest) < 1:
-        fail("inspect action requires identity_path")
-    identity_path = rest[0]
     group = read_group()
     close_group(group)
     raise SystemExit(0 if group else 2)
 
-if action == "signal":
-    if len(rest) < 2 or rest[1] not in ("TERM", "KILL"):
-        fail("signal action requires identity_path and signal name (TERM or KILL)")
-    identity_path = rest[0]
-    extra = [rest[1]]
-elif action not in ("create", "legacy-inspect", "inspect"):
+if action != "signal" or len(extra) != 1 or extra[0] not in ("TERM", "KILL"):
     fail("Invalid dashboard process-helper action")
 if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
     fail("This Python/Linux runtime lacks pidfd signaling; refusing numeric-PID signaling")
@@ -497,6 +728,14 @@ PY
 
 # Create dashboard directory
 mkdir -p "${DASHBOARD_DIR}"
+if [ -L "${DASHBOARD_DIR}" ] || [ ! -d "${DASHBOARD_DIR}" ]; then
+    log_error "Dashboard state path is not a real directory; refusing unsafe metadata writes"
+    exit 1
+fi
+if [ "$(stat -c %u "${DASHBOARD_DIR}")" != "$(id -u)" ]; then
+    log_error "Dashboard state directory is not owned by the current user"
+    exit 1
+fi
 
 # Check if dashboard SIF exists
 if [ ! -f "${DASHBOARD_SIF}" ]; then
@@ -677,9 +916,31 @@ if [ -f "${PID_FILE}" ] && [ -f "${PORT_FILE}" ]; then
     # Missing identity metadata can only use read-only legacy recovery.
     if [ ! -e "${IDENTITY_FILE}" ] && [ ! -L "${IDENTITY_FILE}" ]; then
         if dashboard_process_helper legacy-inspect "${OLD_PID}" "${OLD_PGID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}" "${IDENTITY_FILE}"; then
-            log_error "The stored launcher PID or process group is active"
-            log_error "Refusing cleanup without confirmed termination"
-            exit 1
+            log_warning "Legacy process group is active; verifying its complete runtime and dashboard identity before adoption"
+            STORED_PROJECT=$(cat "${PROJECT_FILE}" 2>/dev/null || true)
+            STORED_OUTDIR=$(cat "${OUTDIR_FILE}" 2>/dev/null || true)
+            if [ "${STORED_PROJECT}" != "${PROJECT_DIR}" ] || [ "${STORED_OUTDIR}" != "${OUTDIR_ABS_CHECK}" ]; then
+                log_error "Stored project/output-directory ownership files do not match this launch"
+                log_error "Legacy dashboard was not adopted and no process was signaled"
+                exit 1
+            fi
+            if ! dashboard_process_helper adopt-legacy "${OLD_PID}" "${OLD_PGID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}" "${IDENTITY_FILE}" "${DASHBOARD_SIF_ABS}" "${PROJECT_FILE}" "${OUTDIR_FILE}"; then
+                log_error "Legacy dashboard recovery was refused; no process was signaled"
+                exit 1
+            fi
+
+            OLD_BIND_ADDRESS=$(cat "${BIND_ADDRESS_FILE}" 2>/dev/null || echo "")
+            if [ "${PORT}" = "${OLD_PORT}" ] && [ "${DASHBOARD_BIND_ADDRESS}" = "${OLD_BIND_ADDRESS}" ]; then
+                log_info "Verified legacy dashboard adopted and already matches the requested configuration"
+                log_info "  PID: ${OLD_PID}, Port: ${OLD_PORT}"
+                exit 0
+            fi
+
+            log_info "Verified legacy dashboard adopted; using validated ownership metadata for the requested restart"
+            if ! stop_verified_dashboard "${OLD_PID}" "${OLD_PGID}" "${OLD_PORT}"; then
+                log_error "Failed to stop the verified legacy dashboard"
+                exit 1
+            fi
         else
             HELPER_STATUS=$?
             if [ "${HELPER_STATUS}" -eq 2 ]; then
@@ -809,21 +1070,12 @@ if [ -f "${PID_FILE}" ] && [ -f "${PORT_FILE}" ]; then
     fi
 fi
 
+chmod 700 "${DASHBOARD_DIR}"
+
 ACTUAL_PORT="${PORT}"
 if ! check_port "${ACTUAL_PORT}"; then
-    log_warning "Port ${ACTUAL_PORT} already in use, searching for available port..."
-    for try_port in $(seq 8501 8520); do
-        if check_port "${try_port}"; then
-            ACTUAL_PORT="${try_port}"
-            log_info "Found available port: ${ACTUAL_PORT}"
-            break
-        fi
-    done
-
-    if [ "${ACTUAL_PORT}" = "${PORT}" ]; then
-        log_error "No available ports found in range 8501-8520"
-        exit 1
-    fi
+    log_error "Port ${ACTUAL_PORT} is already in use; refusing to start another dashboard or choose a fallback port"
+    exit 1
 fi
 
 # Create output directory if it doesn't exist
@@ -831,8 +1083,6 @@ mkdir -p "${OUTDIR}"
 
 # Convert to absolute paths
 OUTDIR_ABS="$(cd "${OUTDIR}" && pwd)"
-DASHBOARD_SIF_ABS="$(cd "$(dirname "${DASHBOARD_SIF}")" && pwd)/$(basename "${DASHBOARD_SIF}")"
-
 # Launch dashboard in background
 log_info "Starting dashboard..."
 log_info "  Output directory: ${OUTDIR_ABS}"
@@ -887,7 +1137,7 @@ echo "${ACTUAL_PORT}" > "${PORT_FILE}"
 echo "${PROJECT_DIR}" > "${PROJECT_FILE}"
 echo "${OUTDIR_ABS}" > "${OUTDIR_FILE}"
 echo "${DASHBOARD_BIND_ADDRESS}" > "${BIND_ADDRESS_FILE}"
-if ! dashboard_process_helper create "${DASHBOARD_PID}" "${DASHBOARD_PGID}" "${ACTUAL_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}"; then
+if ! dashboard_process_helper create "${DASHBOARD_PID}" "${DASHBOARD_PGID}" "${ACTUAL_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}" "${DASHBOARD_SIF_ABS}" "${PROJECT_FILE}" "${OUTDIR_FILE}"; then
     log_error "Could not establish stable process ownership metadata."
     log_error "No processes were signaled; state files are preserved for manual recovery."
     exit 1

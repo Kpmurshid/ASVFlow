@@ -85,6 +85,7 @@ def read_task(pid, proc_fd=None):
             exe_state = "inaccessible"
         return {
             "state": fields[0],
+            "ppid": int(fields[1]),
             "pgrp": int(fields[2]),
             "session": int(fields[3]),
             "start_ticks": int(fields[19]),
@@ -141,6 +142,7 @@ def is_dashboard_member(task, project, port, outdir, expected_uid, pgid):
         return False
     return (
         task["uid"] == expected_uid
+        and task["ppid"] == pgid
         and task["pgrp"] == pgid
         and task["session"] == pgid
         and is_dashboard_executable(task)
@@ -152,13 +154,18 @@ def is_dashboard_member(task, project, port, outdir, expected_uid, pgid):
     )
 
 
-action, pid_text, pgid_text, port, project, outdir, identity_path, *extra = sys.argv[1:]
+helper_args = sys.argv[1:]
+if len(helper_args) < 7:
+    fail("Dashboard process helper requires action, PID, PGID, port, project, output directory, and identity path")
+action, pid_text, pgid_text, port, project, outdir = helper_args[:6]
+IDENTITY_PATH = helper_args[6]
+extra = helper_args[7:]
 if not pid_text.isdecimal() or not pgid_text.isdecimal():
     fail("PID and PGID must be decimal integers")
 pid, pgid = int(pid_text), int(pgid_text)
 
 try:
-    fd = os.open(identity_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(IDENTITY_PATH, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     metadata_stat = os.fstat(fd)
     if (
         not stat.S_ISREG(metadata_stat.st_mode)
@@ -175,7 +182,7 @@ expected_keys = {
     "version", "pid", "pgid", "uid", "boot_id", "start_ticks", "exe",
     "cmdline_sha256", "exe_state", "project", "outdir", "port",
 }
-metadata_dir = os.stat(os.path.dirname(identity_path), follow_symlinks=False)
+metadata_dir = os.stat(os.path.dirname(IDENTITY_PATH), follow_symlinks=False)
 if (
     not isinstance(identity, dict)
     or set(identity) != expected_keys
@@ -209,6 +216,13 @@ if (
 
 
 def leader_matches(task):
+    argv = argv_for(task)
+    executable = os.path.basename(task["exe"] or "")
+    runtime_parent = (
+        executable == "starter"
+        and len(argv) == 1
+        and argv[0] == "Apptainer runtime parent: asvflow-dashboard.sif"
+    )
     return bool(
         task
         and task["state"] not in ("Z", "X")
@@ -221,10 +235,12 @@ def leader_matches(task):
         and hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
         and (
             identity["exe_state"] == "inaccessible"
-            or os.path.basename(task["exe"]) in ("singularity", "apptainer")
+            or executable in ("singularity", "apptainer", "starter")
         )
-        and "exec" in argv_for(task)
-        and has_dashboard_command(task, project, port, outdir)
+        and (
+            ("exec" in argv and has_dashboard_command(task, project, port, outdir))
+            or runtime_parent
+        )
     )
 
 

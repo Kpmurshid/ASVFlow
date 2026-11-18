@@ -43,7 +43,9 @@ workflow {
             // Launch dashboard asynchronously
             def dashboard_env = System.getenv().collect { key, value -> "${key}=${value}" }
             dashboard_env.removeAll { it.startsWith('DASHBOARD_BIND_ADDRESS=') }
-            dashboard_env << "DASHBOARD_BIND_ADDRESS=${params.dashboard_bind_address}"
+            if (params.dashboard_bind_address) {
+                dashboard_env << "DASHBOARD_BIND_ADDRESS=${params.dashboard_bind_address}"
+            }
             def proc = dashboard_cmd.execute(dashboard_env, null)
             def dashboard_stdout = new StringBuffer()
             def dashboard_stderr = new StringBuffer()
@@ -88,8 +90,12 @@ workflow {
                             log.warn "Expected: ${port_file}"
                         }
                     } else {
+                        def stdout = dashboard_stdout.toString().trim()
                         def stderr = dashboard_stderr.toString().trim()
                         log.warn "Dashboard launcher exited with code ${exit_val}"
+                        if (stdout) {
+                            log.warn "Launcher output: ${stdout}"
+                        }
                         if (stderr) {
                             log.warn "Error output: ${stderr}"
                         }
