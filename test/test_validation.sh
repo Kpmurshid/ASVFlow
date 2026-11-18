@@ -2,7 +2,7 @@
 # Test script for ASVFlow Part 1 input validation
 set -euo pipefail
 
-BASEDIR="/SCRATCH/murshid/work/tool/asvflow"
+BASEDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$BASEDIR"
 
 echo "=== ASVFlow Part 1 Input Validation Tests ==="
