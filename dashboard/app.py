@@ -10,6 +10,7 @@ import sys
 import argparse
 from pathlib import Path
 import time
+import streamlit.components.v1 as components
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -167,6 +168,7 @@ def main():
     st.sidebar.markdown('<div class="run-selector-spacer"></div>', unsafe_allow_html=True)
 
     selected_run = available_runs[selected_idx]
+    selected_run_key = f"{selected_run.get('run_name')}:{selected_run.get('session_id')}:{selected_run.get('timestamp')}"
     outdir = monitor.get_run_outdir(selected_run)
     selected_run['artifacts'] = monitor.get_run_artifacts(selected_run, available_runs)
     scanner = OutputScanner(outdir, run_info=selected_run)
@@ -265,67 +267,70 @@ def main():
 
     st.caption("Navigate to detailed analysis pages")
 
+    st.markdown("""
+    <style>
+    [class*="st-key-quick_access_"] button {
+        width: 100%;
+        min-height: 108px;
+        padding: 1rem;
+        border-radius: 8px;
+        text-align: center;
+        white-space: pre-line;
+        line-height: 1.65;
+        font-weight: 400;
+    }
+    [class*="st-key-quick_access_"][class*="_available"] button {
+        background-color: rgba(34, 197, 94, 0.1);
+        border: 1px solid rgba(34, 197, 94, 0.2);
+    }
+    [class*="st-key-quick_access_"][class*="_pending"] button,
+    [class*="st-key-quick_access_"][class*="_optional"] button {
+        background-color: rgba(128, 128, 128, 0.05);
+        border: 1px solid rgba(128, 128, 128, 0.1);
+        opacity: 0.65;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    def quick_access_card(key, title, status, available, page=None, artifact_path=None):
+        state = 'available' if available else ('optional' if status == 'Optional' else 'pending')
+        icon = '✓' if available else '○'
+        clicked = st.button(
+            f'{icon}  **{title}**  \n{status}',
+            key=f'quick_access_{key}_{state}',
+            use_container_width=True
+        )
+        if clicked:
+            if page:
+                st.switch_page(str(Path(__file__).parent / 'pages' / page))
+            elif artifact_path:
+                st.session_state.quick_access_report_path = str(artifact_path)
+                st.session_state.quick_access_report_message = None
+                st.session_state.quick_access_report_run_key = selected_run_key
+            else:
+                st.session_state.quick_access_report_path = None
+                st.session_state.quick_access_report_message = 'No Nextflow report or timeline is available for this run yet.'
+                st.session_state.quick_access_report_run_key = selected_run_key
+
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        if outputs['qc']['raw_multiqc']:
-            st.markdown("""
-            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
-                        border-radius: 8px; padding: 1rem; text-align: center;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
-                <div style="font-weight: 600;">QC Results</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
-                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
-                <div style="font-weight: 600;">QC Results</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
-            </div>
-            """, unsafe_allow_html=True)
+        quick_access_card(
+            'qc', 'QC Results', 'Available' if outputs['qc']['raw_multiqc'] else 'Pending',
+            bool(outputs['qc']['raw_multiqc']), page='1_🔬_QC_Results.py'
+        )
 
     with col2:
-        if outputs['dada2']['seqtab']:
-            st.markdown("""
-            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
-                        border-radius: 8px; padding: 1rem; text-align: center;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
-                <div style="font-weight: 600;">DADA2 Results</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
-                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
-                <div style="font-weight: 600;">DADA2 Results</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
-            </div>
-            """, unsafe_allow_html=True)
+        quick_access_card(
+            'dada2', 'DADA2 Results', 'Available' if outputs['dada2']['seqtab'] else 'Pending',
+            bool(outputs['dada2']['seqtab']), page='2_🧬_DADA2_Results.py'
+        )
 
     with col3:
-        if outputs['taxonomy']['taxonomy_table']:
-            st.markdown("""
-            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
-                        border-radius: 8px; padding: 1rem; text-align: center;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
-                <div style="font-weight: 600;">Taxonomy</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
-                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
-                <div style="font-weight: 600;">Taxonomy</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
-            </div>
-            """, unsafe_allow_html=True)
+        quick_access_card(
+            'taxonomy', 'Taxonomy', 'Available' if outputs['taxonomy']['taxonomy_table'] else 'Pending',
+            bool(outputs['taxonomy']['taxonomy_table']), page='3_🦠_Taxonomy.py'
+        )
 
     st.markdown("")  # Spacing
 
@@ -333,24 +338,11 @@ def main():
     col4, col5, col6 = st.columns(3)
 
     with col4:
-        if outputs['community']['alpha_diversity']:
-            st.markdown("""
-            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
-                        border-radius: 8px; padding: 1rem; text-align: center;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
-                <div style="font-weight: 600;">Community Analysis</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
-                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.5;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
-                <div style="font-weight: 600;">Community Analysis</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Optional</div>
-            </div>
-            """, unsafe_allow_html=True)
+        quick_access_card(
+            'community', 'Community Analysis',
+            'Available' if outputs['community']['alpha_diversity'] else 'Optional',
+            bool(outputs['community']['alpha_diversity']), page='4_📊_Community_Analysis.py'
+        )
 
     with col5:
         report_states = outputs['report_states']
@@ -358,46 +350,34 @@ def main():
         timeline_status = report_states['execution_timeline']
         reports_available = report_status == 'Available' or timeline_status == 'Available'
         reports_status_text = f"Report: {report_status} · Timeline: {timeline_status}"
-        if reports_available:
-            st.markdown("""
-            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
-                        border-radius: 8px; padding: 1rem; text-align: center;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
-                <div style="font-weight: 600;">Nextflow Reports</div>
-                <div style="font-size: 0.75rem; opacity: 0.7; margin-top: 0.25rem;">""" + reports_status_text + """</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
-                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
-                <div style="font-weight: 600;">Nextflow Reports</div>
-                <div style="font-size: 0.75rem; opacity: 0.7; margin-top: 0.25rem;">""" + reports_status_text + """</div>
-            </div>
-            """, unsafe_allow_html=True)
+        report_path = outputs['reports']['execution_report'] or outputs['reports']['execution_timeline']
+        quick_access_card(
+            'reports', 'Nextflow Reports', reports_status_text, reports_available,
+            artifact_path=report_path
+        )
 
     with col6:
-        if outputs['dada2']['seqtab']:
-            st.markdown("""
-            <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
-                        border-radius: 8px; padding: 1rem; text-align: center;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
-                <div style="font-weight: 600;">Sample Explorer</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="background-color: rgba(128, 128, 128, 0.05); border: 1px solid rgba(128, 128, 128, 0.1);
-                        border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
-                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
-                <div style="font-weight: 600;">Sample Explorer</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
-            </div>
-            """, unsafe_allow_html=True)
+        quick_access_card(
+            'sample_explorer', 'Sample Explorer',
+            'Available' if outputs['dada2']['seqtab'] else 'Pending',
+            bool(outputs['dada2']['seqtab']), page='5_🔍_Sample_Explorer.py'
+        )
 
     st.markdown("")  # Spacing
+
+    report_run_key = st.session_state.get('quick_access_report_run_key')
+    report_path = (
+        st.session_state.get('quick_access_report_path')
+        if report_run_key == selected_run_key else None
+    )
+    if report_path:
+        st.markdown("### Nextflow Report Preview")
+        try:
+            components.html(Path(report_path).read_text(encoding='utf-8'), height=800, scrolling=True)
+        except OSError as error:
+            st.warning(f"Unable to open this report artifact: {error}")
+    elif report_run_key == selected_run_key and st.session_state.get('quick_access_report_message'):
+        st.info(st.session_state.quick_access_report_message)
 
     # ========== TASK DETAILS SECTION ==========
     st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; margin-top: 2rem; padding-bottom: 0.5rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Task Execution Details</div>', unsafe_allow_html=True)
