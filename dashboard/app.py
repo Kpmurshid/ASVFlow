@@ -168,7 +168,8 @@ def main():
 
     selected_run = available_runs[selected_idx]
     outdir = monitor.get_run_outdir(selected_run)
-    scanner = OutputScanner(outdir)
+    selected_run['artifacts'] = monitor.get_run_artifacts(selected_run, available_runs)
+    scanner = OutputScanner(outdir, run_info=selected_run)
     st.session_state.selected_run = selected_run
     st.session_state.scanner = scanner
 
@@ -352,13 +353,18 @@ def main():
             """, unsafe_allow_html=True)
 
     with col5:
-        if outputs['reports']['execution_report']:
+        report_states = outputs['report_states']
+        report_status = report_states['execution_report']
+        timeline_status = report_states['execution_timeline']
+        reports_available = report_status == 'Available' or timeline_status == 'Available'
+        reports_status_text = f"Report: {report_status} · Timeline: {timeline_status}"
+        if reports_available:
             st.markdown("""
             <div style="background-color: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.2);
                         border-radius: 8px; padding: 1rem; text-align: center;">
                 <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✓</div>
                 <div style="font-weight: 600;">Nextflow Reports</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Available</div>
+                <div style="font-size: 0.75rem; opacity: 0.7; margin-top: 0.25rem;">""" + reports_status_text + """</div>
             </div>
             """, unsafe_allow_html=True)
         else:
@@ -367,7 +373,7 @@ def main():
                         border-radius: 8px; padding: 1rem; text-align: center; opacity: 0.6;">
                 <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">○</div>
                 <div style="font-weight: 600;">Nextflow Reports</div>
-                <div style="font-size: 0.875rem; opacity: 0.7; margin-top: 0.25rem;">Pending</div>
+                <div style="font-size: 0.75rem; opacity: 0.7; margin-top: 0.25rem;">""" + reports_status_text + """</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -396,11 +402,11 @@ def main():
     # ========== TASK DETAILS SECTION ==========
     st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; margin-top: 2rem; padding-bottom: 0.5rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Task Execution Details</div>', unsafe_allow_html=True)
 
-    # Get session-specific execution trace
-    trace_df = scanner.get_execution_trace(selected_run['session_id'], monitor)
+    # Read the selected invocation's execution trace artifact.
+    trace_df = scanner.get_execution_trace()
 
     if not trace_df.empty:
-        st.caption(f"Showing {len(trace_df)} completed tasks from execution trace")
+        st.caption(f"Showing {len(trace_df)} tasks from this run's execution trace")
 
         # Display key columns
         display_cols = ['name', 'status', 'exit', 'duration', 'realtime', '%cpu', 'peak_rss']
@@ -439,7 +445,14 @@ def main():
             use_container_width=False
         )
     else:
-        st.info("⏳ Task execution trace not yet available. Trace file is created when pipeline begins executing tasks.")
+        trace_status = selected_run.get('artifacts', {}).get('trace', {}).get('status', 'Missing')
+        trace_messages = {
+            'Pending': 'Task execution trace is pending while this run is active.',
+            'Available': 'Task execution trace is available but contains no task rows.',
+            'Missing': 'Task execution trace is missing for this invocation.',
+            'Generation failed': 'Nextflow failed to generate the task execution trace for this invocation.'
+        }
+        st.info(trace_messages.get(trace_status, 'Task execution trace is missing for this invocation.'))
 
     # Auto-refresh mechanism
     if auto_refresh:

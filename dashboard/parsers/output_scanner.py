@@ -13,97 +13,53 @@ from typing import Dict, List, Optional
 class OutputScanner:
     """Scan ASVFlow output directory for available results"""
 
-    def __init__(self, outdir: str):
+    def __init__(self, outdir: str, run_info: Optional[Dict] = None):
         self.outdir = Path(outdir)
+        self.run_info = run_info
 
-    def get_execution_trace(self, session_id: Optional[str] = None, monitor=None) -> pd.DataFrame:
-        """Parse execution trace from Nextflow's task log.
-
-        Args:
-            session_id: Nextflow session ID (UUID format). If provided with monitor,
-                       retrieves session-specific task data from Nextflow's internal database.
-            monitor: NextflowMonitor instance. Required when session_id is provided.
-
-        Returns:
-            DataFrame with task execution data, or empty DataFrame if unavailable.
-
-        Note: When session_id is provided, this method uses Nextflow's internal task log
-              as the authoritative source and does NOT fall back to trace files, ensuring
-              strict session isolation.
-        """
-        # If session_id is provided, enforce strict session isolation
-        if session_id:
-            # If monitor is not provided, cannot query session-specific data
-            if not monitor:
+    def get_execution_trace(self) -> pd.DataFrame:
+        """Read the trace artifact resolved for this exact Nextflow invocation."""
+        if self.run_info:
+            artifact = self.run_info.get('artifacts', {}).get('trace', {})
+            if artifact.get('status') != 'Available':
                 return pd.DataFrame()
+            trace_file = Path(artifact['path'])
+        else:
+            # Compatibility for pages or callers without run selection metadata.
+            trace_file = self.outdir / 'execution_trace.txt'
 
-            # Query Nextflow's internal task log for session-specific data
-            try:
-                df = monitor.get_task_log(session_id)
-                # Return immediately, even if empty - do not fall back to trace files
-                # when session_id is explicitly provided
-                return df
-            except Exception as e:
-                print(f"Warning: Failed to get task log from Nextflow: {e}")
-                # Return empty DataFrame on failure when session_id is provided
-                return pd.DataFrame()
+        if not trace_file.is_file():
+            return pd.DataFrame()
+        try:
+            return pd.read_csv(trace_file, sep='\t')
+        except Exception as error:
+            print(f"Warning: Failed to parse execution trace {trace_file}: {error}")
+            return pd.DataFrame()
 
-        # Legacy fallback: Only used when session_id is None
-        # This preserves backward compatibility for callers without session info
-
-        # Look for timestamped trace files in pipeline_info
-        pipeline_info_dir = self.outdir / 'pipeline_info'
-        if pipeline_info_dir.exists():
-            # Get the most recent trace file
-            trace_files = sorted(pipeline_info_dir.glob('trace_*.txt'), reverse=True)
-            if trace_files:
-                try:
-                    df = pd.read_csv(trace_files[0], sep='\t')
-                    return df
-                except Exception as e:
-                    print(f"Warning: Failed to parse {trace_files[0]}: {e}")
-
-        # Legacy fallback: execution_trace.txt in outdir root
-        trace_file = self.outdir / 'execution_trace.txt'
-        if trace_file.exists():
-            try:
-                df = pd.read_csv(trace_file, sep='\t')
-                return df
-            except Exception as e:
-                print(f"Warning: Failed to parse execution_trace.txt: {e}")
-
-        return pd.DataFrame()
-
-    def get_task_status_summary(self, session_id: Optional[str] = None, monitor=None) -> Dict[str, int]:
-        """Aggregate task counts by status from execution trace.
-
-        Args:
-            session_id: Nextflow session ID for session-specific data.
-            monitor: NextflowMonitor instance for retrieving task log.
-
-        Note: Only completed/cached tasks appear in execution trace.
-        Running tasks are NOT detected by this implementation.
-        """
-        df = self.get_execution_trace(session_id, monitor)
+    def get_task_status_summary(self) -> Dict[str, int]:
+        """Aggregate executed, cached, failed, and aborted rows from the run trace."""
+        df = self.get_execution_trace()
 
         if df.empty:
             return {
                 'total': 0,
-                'completed': 0,
+                'executed': 0,
                 'cached': 0,
                 'failed': 0,
                 'aborted': 0
             }
 
-        # Normalize exit codes to numeric, treating non-numeric as NaN
-        df['exit_numeric'] = pd.to_numeric(df['exit'], errors='coerce')
+        statuses = df.get('status', pd.Series('', index=df.index)).fillna('').astype(str).str.strip().str.upper()
+        exit_codes = pd.to_numeric(df.get('exit', pd.Series(index=df.index, dtype='object')), errors='coerce')
+        aborted = statuses.eq('ABORTED')
+        failed = statuses.eq('FAILED') | (exit_codes.notna() & exit_codes.ne(0) & ~aborted)
 
         summary = {
             'total': len(df),
-            'completed': len(df[df['status'] == 'COMPLETED']),
-            'cached': len(df[df['status'] == 'CACHED']),
-            'aborted': len(df[df['status'] == 'ABORTED']),
-            'failed': len(df[(df['exit_numeric'] != 0) & (df['exit_numeric'].notna()) & (df['status'] != 'ABORTED')])
+            'executed': int(statuses.eq('COMPLETED').sum()),
+            'cached': int(statuses.eq('CACHED').sum()),
+            'aborted': int(aborted.sum()),
+            'failed': int(failed.sum())
         }
 
         return summary
@@ -158,9 +114,30 @@ class OutputScanner:
             outputs['community']['comp_genus_relabund'] = self._find_file('community/composition_genus_relabund.tsv')
 
         # Nextflow reports
-        outputs['reports']['execution_report'] = self._find_file('execution_report.html')
-        outputs['reports']['execution_timeline'] = self._find_file('execution_timeline.html')
-        outputs['reports']['execution_trace'] = self._find_file('execution_trace.txt')
+        report_states = {}
+        artifact_keys = {
+            'execution_report': 'report',
+            'execution_timeline': 'timeline',
+            'execution_trace': 'trace',
+        }
+        for output_key, artifact_key in artifact_keys.items():
+            if self.run_info:
+                artifact = self.run_info.get('artifacts', {}).get(artifact_key, {})
+                report_states[output_key] = artifact.get('status', 'Missing')
+                outputs['reports'][output_key] = (
+                    Path(artifact['path'])
+                    if artifact.get('status') == 'Available'
+                    else None
+                )
+            else:
+                default_names = {
+                    'execution_report': 'execution_report.html',
+                    'execution_timeline': 'execution_timeline.html',
+                    'execution_trace': 'execution_trace.txt',
+                }
+                outputs['reports'][output_key] = self._find_file(default_names[output_key])
+                report_states[output_key] = 'Available' if outputs['reports'][output_key] else 'Missing'
+        outputs['report_states'] = report_states
 
         return outputs
 
@@ -178,7 +155,7 @@ class OutputScanner:
             'dada2_available': any(outputs['dada2'].values()),
             'taxonomy_available': any(outputs['taxonomy'].values()),
             'community_available': any(outputs['community'].values()),
-            'reports_available': any(outputs['reports'].values())
+            'reports_available': any(outputs['report_states'].get(key) == 'Available' for key in outputs['reports'])
         }
 
         return stats

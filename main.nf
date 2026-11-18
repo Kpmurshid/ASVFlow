@@ -22,7 +22,59 @@ include { TAXONOMIC_COMPOSITION     } from './modules/community/taxonomic_compos
 include { SEQUENCING_DEPTH          } from './modules/community/sequencing_depth.nf'
 include { PERMANOVA                 } from './modules/community/permanova.nf'
 
+def asvflowRunMetadataFile = null
+def asvflowRunStartedAtMs = null
+
+def writeAsvflowRunMetadata = { File target, Map metadata ->
+    target.parentFile.mkdirs()
+    File temporary = File.createTempFile('.asvflow-run-', '.tmp', target.parentFile)
+    try {
+        temporary.setText(groovy.json.JsonOutput.toJson(metadata), 'UTF-8')
+        java.nio.file.Files.move(
+            temporary.toPath(),
+            target.toPath(),
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+        )
+    } finally {
+        if (temporary.exists()) temporary.delete()
+    }
+}
+
+def resolveAsvflowArtifactPath = { String option, String configuredPath ->
+    def commandLine = workflow.commandLine ?: ''
+    def pattern = "(?:^|\\s)${java.util.regex.Pattern.quote(option)}(?:=|\\s+)(?:\"([^\"]+)\"|'([^']+)'|([^\\s]+))"
+    def matcher = commandLine =~ pattern
+    def explicitPath = null
+    if (matcher.find()) {
+        explicitPath = matcher.group(1) ?: matcher.group(2) ?: matcher.group(3)
+    }
+    def path = new File(explicitPath ?: configuredPath)
+    return (path.isAbsolute() ? path : new File(workflow.launchDir.toFile(), path.path)).canonicalPath
+}
+
 workflow {
+    // Nextflow creates workflow.start before it initializes trace/report observers.
+    asvflowRunStartedAtMs = workflow.start.toInstant().toEpochMilli()
+    def runKey = "${workflow.runName}_${workflow.sessionId}_${params.asvflow_invocation_id}".replaceAll(/[^A-Za-z0-9_.-]/, '_')
+    asvflowRunMetadataFile = new File(workflow.projectDir.toString(), ".asvflow_dashboard/runs/${runKey}.json").absoluteFile
+    def asvflowArtifactPaths = [
+        trace: resolveAsvflowArtifactPath('-with-trace', "${params.asvflow_artifact_dir}/execution_trace.txt"),
+        report: resolveAsvflowArtifactPath('-with-report', "${params.asvflow_artifact_dir}/execution_report.html"),
+        timeline: resolveAsvflowArtifactPath('-with-timeline', "${params.asvflow_artifact_dir}/execution_timeline.html")
+    ]
+    writeAsvflowRunMetadata(asvflowRunMetadataFile, [
+        version: 2,
+        run_name: workflow.runName.toString(),
+        session_id: workflow.sessionId.toString(),
+        invocation_id: params.asvflow_invocation_id.toString(),
+        command_line: workflow.commandLine,
+        launch_dir: workflow.launchDir.toString(),
+        outdir: new File(params.outdir).absolutePath,
+        artifact_paths: asvflowArtifactPaths,
+        started_at_ms: asvflowRunStartedAtMs,
+        status: 'RUNNING'
+    ])
 
     // Launch dashboard if enabled (before pipeline execution)
     if (params.enable_dashboard) {
@@ -453,6 +505,29 @@ workflow {
 }
 
 workflow.onComplete {
+    if (asvflowRunMetadataFile == null) {
+        asvflowRunStartedAtMs = System.currentTimeMillis()
+        def runKey = "${workflow.runName}_${workflow.sessionId}_${params.asvflow_invocation_id}".replaceAll(/[^A-Za-z0-9_.-]/, '_')
+        asvflowRunMetadataFile = new File(workflow.projectDir.toString(), ".asvflow_dashboard/runs/${runKey}.json").absoluteFile
+    }
+    writeAsvflowRunMetadata(asvflowRunMetadataFile, [
+        version: 2,
+        run_name: workflow.runName.toString(),
+        session_id: workflow.sessionId.toString(),
+        invocation_id: params.asvflow_invocation_id.toString(),
+        command_line: workflow.commandLine,
+        launch_dir: workflow.launchDir.toString(),
+        outdir: new File(params.outdir).absolutePath,
+        artifact_paths: [
+            trace: resolveAsvflowArtifactPath('-with-trace', "${params.asvflow_artifact_dir}/execution_trace.txt"),
+            report: resolveAsvflowArtifactPath('-with-report', "${params.asvflow_artifact_dir}/execution_report.html"),
+            timeline: resolveAsvflowArtifactPath('-with-timeline', "${params.asvflow_artifact_dir}/execution_timeline.html")
+        ],
+        started_at_ms: asvflowRunStartedAtMs,
+        completed_at_ms: System.currentTimeMillis(),
+        status: workflow.success ? 'OK' : 'ERR'
+    ])
+
     log.info ""
     log.info "Pipeline completed at: ${workflow.complete}"
     log.info "Execution status: ${workflow.success ? 'SUCCESS' : 'FAILED'}"

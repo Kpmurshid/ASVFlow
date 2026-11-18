@@ -162,11 +162,11 @@ def render(monitor, scanner, run_info: Dict):
     # ========== TASK METRICS SECTION ==========
     st.markdown('<div class="section-header">Task Execution Summary</div>', unsafe_allow_html=True)
 
-    # Get session-specific task statistics
-    task_summary = scanner.get_task_status_summary(run_info['session_id'], monitor)
+    # Task statistics come from the selected invocation's trace artifact.
+    task_summary = scanner.get_task_status_summary()
 
     if task_summary['total'] > 0:
-        st.caption("Showing completed tasks from execution trace")
+        st.caption("Showing task statuses from the selected run's execution trace")
 
         # Task metric cards
         col1, col2, col3, col4 = st.columns(4)
@@ -174,8 +174,8 @@ def render(monitor, scanner, run_info: Dict):
         with col1:
             st.markdown(f"""
             <div class="task-card">
-                <div class="task-card-label">Completed</div>
-                <div class="task-card-value" style="color: #16a34a;">{task_summary['completed']}</div>
+                <div class="task-card-label">Executed</div>
+                <div class="task-card-value" style="color: #16a34a;">{task_summary['executed']}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -206,7 +206,7 @@ def render(monitor, scanner, run_info: Dict):
 
         # Progress indicator
         st.markdown("")  # Spacing
-        completed_total = task_summary['completed'] + task_summary['cached']
+        completed_total = task_summary['executed'] + task_summary['cached']
         progress = completed_total / task_summary['total']
 
         st.markdown(f"""
@@ -218,7 +218,14 @@ def render(monitor, scanner, run_info: Dict):
 
         st.progress(progress)
     else:
-        st.info("⏳ Waiting for pipeline tasks to complete. Task metrics will appear here once execution begins.")
+        trace_status = run_info.get('artifacts', {}).get('trace', {}).get('status', 'Missing')
+        trace_messages = {
+            'Pending': 'Task metrics are pending while this run is active.',
+            'Available': 'The execution trace is available but contains no task rows.',
+            'Missing': 'Task metrics are missing for this invocation.',
+            'Generation failed': 'Nextflow failed to generate the task trace for this invocation.'
+        }
+        st.info(trace_messages.get(trace_status, 'Task metrics are missing for this invocation.'))
 
     st.markdown("")  # Spacing
 

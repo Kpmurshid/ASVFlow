@@ -8,9 +8,11 @@ Parses Nextflow metadata using:
 
 import subprocess
 import re
+import json
+import shlex
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
-import pandas as pd
 
 
 class NextflowMonitor:
@@ -104,62 +106,166 @@ class NextflowMonitor:
 
     def get_run_outdir(self, run_info: Dict) -> Optional[str]:
         """Extract output directory from run command"""
-        command = run_info.get('command', '')
+        metadata = self._run_metadata(run_info)
+        if metadata and metadata.get('outdir'):
+            return metadata['outdir']
+        tokens = self._command_tokens(run_info)
+        value = self._option_value(tokens, '--outdir')
+        return value or 'results'
 
-        # Look for --outdir parameter
-        match = re.search(r'--outdir\s+(\S+)', command)
-        if match:
-            return match.group(1)
-
-        # Default
-        return 'results'
-
-    def get_task_log(self, session_id: str) -> pd.DataFrame:
-        """Get task-level details using nextflow log <session_id>
-
-        Args:
-            session_id: Nextflow session ID (UUID format)
-
-        Returns:
-            DataFrame with task execution data for the specified session
-        """
+    @staticmethod
+    def _command_tokens(run_info: Dict) -> List[str]:
         try:
-            result = subprocess.run(
-                ["nextflow", "log", session_id, "-f",
-                 "task_id,hash,name,status,exit,submit,duration,realtime,pcpu,peak_rss"],
-                cwd=self.project_dir,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+            return shlex.split(run_info.get('command', ''))
+        except ValueError:
+            return []
 
-            if result.returncode != 0:
-                return pd.DataFrame()
+    @staticmethod
+    def _option_value(tokens: List[str], option: str) -> Optional[str]:
+        for index, token in enumerate(tokens):
+            if token == option and index + 1 < len(tokens) and not tokens[index + 1].startswith('-'):
+                return tokens[index + 1]
+            if token.startswith(option + '='):
+                return token.split('=', 1)[1]
+        return None
 
-            lines = result.stdout.strip().split('\n')
-            if not lines:
-                return pd.DataFrame()
+    def _resolved_outdir(self, run_info: Dict) -> Path:
+        metadata = self._run_metadata(run_info)
+        if metadata and metadata.get('outdir'):
+            return Path(metadata['outdir']).expanduser().resolve()
+        path = Path(self.get_run_outdir(run_info)).expanduser()
+        return (path if path.is_absolute() else self.project_dir / path).resolve()
 
-            # Parse tab-separated output
-            data = []
-            for line in lines:
-                parts = line.split('\t')
-                if len(parts) >= 10:
-                    data.append({
-                        'task_id': parts[0],
-                        'hash': parts[1],
-                        'name': parts[2],
-                        'status': parts[3],
-                        'exit': parts[4],
-                        'submit': parts[5],
-                        'duration': parts[6],
-                        'realtime': parts[7],
-                        'pcpu': parts[8],
-                        'peak_rss': parts[9]
-                    })
+    def _run_metadata(self, run_info: Dict) -> Optional[Dict]:
+        run_key = re.sub(
+            r'[^A-Za-z0-9_.-]', '_',
+            f"{run_info.get('run_name', '')}_{run_info.get('session_id', '')}"
+        )
+        metadata_dir = self.project_dir / '.asvflow_dashboard' / 'runs'
+        candidates = [metadata_dir / f'{run_key}.json']
+        candidates.extend(sorted(metadata_dir.glob(f'{run_key}_*.json')))
+        records = []
+        for path in candidates:
+            try:
+                with path.open(encoding='utf-8') as stream:
+                    data = json.load(stream)
+                if (
+                    data.get('version') in (1, 2)
+                    and data.get('run_name') == run_info.get('run_name')
+                    and data.get('session_id') == run_info.get('session_id')
+                    and isinstance(data.get('started_at_ms'), int)
+                ):
+                    records.append(data)
+            except (OSError, ValueError, TypeError):
+                continue
+        if not records:
+            return None
 
-            return pd.DataFrame(data)
+        command = run_info.get('command', '')
+        matching_command = [record for record in records if record.get('command_line') == command]
+        if matching_command:
+            records = matching_command
+        try:
+            timestamp_ms = int(datetime.strptime(
+                run_info['timestamp'], '%Y-%m-%d %H:%M:%S'
+            ).timestamp() * 1000)
+            return min(records, key=lambda record: abs(record['started_at_ms'] - timestamp_ms))
+        except (KeyError, TypeError, ValueError):
+            return max(records, key=lambda record: record['started_at_ms'])
 
-        except Exception as e:
-            print(f"Warning: Failed to get task log: {e}")
-            return pd.DataFrame()
+    def _artifact_path(self, run_info: Dict, kind: str) -> Path:
+        metadata = self._run_metadata(run_info)
+        if metadata and metadata.get('artifact_paths', {}).get(kind):
+            return Path(metadata['artifact_paths'][kind]).expanduser().resolve()
+        options = {
+            'trace': ('-with-trace', 'execution_trace.txt'),
+            'report': ('-with-report', 'execution_report.html'),
+            'timeline': ('-with-timeline', 'execution_timeline.html'),
+        }
+        option, default_name = options[kind]
+        explicit_path = self._option_value(self._command_tokens(run_info), option)
+        if not explicit_path:
+            return (self._resolved_outdir(run_info) / default_name).resolve()
+        path = Path(explicit_path).expanduser()
+        if path.is_absolute():
+            return path.resolve()
+        metadata = self._run_metadata(run_info)
+        launch_dir = Path(metadata['launch_dir']) if metadata and metadata.get('launch_dir') else self.project_dir
+        return (launch_dir / path).resolve()
+
+    def _artifact_failure_logged(self, run_info: Dict, kind: str, start_ms: int, next_start_ms: Optional[int]) -> bool:
+        log_path = self.project_dir / '.nextflow.log'
+        try:
+            stat_result = log_path.stat()
+            log_mtime_ms = stat_result.st_mtime_ns // 1_000_000
+            if log_mtime_ms < start_ms or (next_start_ms is not None and log_mtime_ms >= next_start_ms):
+                return False
+            content = log_path.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            return False
+
+        patterns = {
+            'trace': ('TraceFileObserver', 'writer'),
+            'report': ('Failed to render execution report',),
+            'timeline': ('Failed to render execution timeline',),
+        }
+        if kind == 'trace':
+            return 'TraceFileObserver' in content and ('writer' in content or 'trace file' in content.lower())
+        return any(pattern in content for pattern in patterns[kind])
+
+    def get_run_artifacts(self, run_info: Dict, runs: Optional[List[Dict]] = None) -> Dict[str, Dict]:
+        """Resolve selected-run artifacts and reject files outside that invocation's time window."""
+        runs = runs or [run_info]
+        metadata = self._run_metadata(run_info)
+        run_start_ms = metadata.get('started_at_ms') if metadata else None
+        result = {}
+        for kind in ('trace', 'report', 'timeline'):
+            path = self._artifact_path(run_info, kind)
+            later_starts = []
+            if run_start_ms is not None:
+                for other in runs:
+                    if other is run_info or (
+                        other.get('run_name') == run_info.get('run_name')
+                        and other.get('session_id') == run_info.get('session_id')
+                    ):
+                        continue
+                    other_metadata = self._run_metadata(other)
+                    if not other_metadata or other_metadata['started_at_ms'] <= run_start_ms:
+                        continue
+                    if self._artifact_path(other, kind) == path:
+                        later_starts.append(other_metadata['started_at_ms'])
+            next_start_ms = min(later_starts) if later_starts else None
+
+            artifact_exists = path.is_file()
+            fresh = False
+            if artifact_exists and metadata:
+                invocation_id = metadata.get('invocation_id')
+                invocation_path = invocation_id and invocation_id in path.parts
+                if invocation_path:
+                    # A unique per-invocation path is the primary identity check.
+                    fresh = True
+                elif run_start_ms is not None:
+                    # Explicit CLI paths may be shared; use workflow.start, which predates
+                    # observer initialization, as a secondary freshness check.
+                    mtime_ms = path.stat().st_mtime_ns // 1_000_000
+                    fresh = mtime_ms >= run_start_ms and (
+                        next_start_ms is None or mtime_ms < next_start_ms
+                    )
+
+            status = 'Missing'
+            if fresh:
+                status = 'Available'
+            elif run_info.get('status') in ('-', 'RUNNING'):
+                status = 'Pending'
+            elif run_start_ms is not None and self._artifact_failure_logged(
+                run_info, kind, run_start_ms, next_start_ms
+            ):
+                status = 'Generation failed'
+
+            result[kind] = {
+                'path': str(path),
+                'status': status,
+                'requested': True,
+                'run_metadata_available': metadata is not None,
+            }
+        return result
