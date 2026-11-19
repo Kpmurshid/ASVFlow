@@ -6,7 +6,15 @@ set -e
 
 OUTDIR="${1:-results}"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DASHBOARD_DIR="${OUTDIR}/.asvflow_dashboard"
+OUTDIR_ABS="$(realpath -m -- "${OUTDIR}")"
+STATE_ROOT="${ASVFLOW_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/asvflow/dashboard}"
+STATE_KEY="$(printf '%s' "${PROJECT_DIR}:${OUTDIR_ABS}" | sha256sum | awk '{print $1}')"
+DASHBOARD_DIR="${STATE_ROOT}/${STATE_KEY}"
+# Read old in-results state when migrating an installation created before the
+# external state directory was introduced.
+if [ ! -d "${DASHBOARD_DIR}" ] && [ -d "${OUTDIR}/.asvflow_dashboard" ] && [ ! -L "${OUTDIR}/.asvflow_dashboard" ]; then
+    DASHBOARD_DIR="${OUTDIR}/.asvflow_dashboard"
+fi
 PID_FILE="${DASHBOARD_DIR}/dashboard.pid"
 PORT_FILE="${DASHBOARD_DIR}/dashboard.port"
 PGID_FILE="${DASHBOARD_DIR}/dashboard.pgid"
@@ -244,6 +252,17 @@ def leader_matches(task):
     )
 
 
+def same_process_instance(left, right):
+    # /proc stat's state field changes during normal scheduling (R/S/D); it is
+    # not part of process identity. Compare stable fields before pidfd signals.
+    if left is None or right is None:
+        return False
+    # The launcher may be reparented after its shell exits; PPID is therefore
+    # intentionally excluded while its session and start time remain stable.
+    stable = ("pgrp", "session", "start_ticks", "uid", "exe", "exe_state", "cmdline")
+    return all(left.get(key) == right.get(key) for key in stable)
+
+
 def read_group():
     members = []
     for entry in os.scandir("/proc"):
@@ -320,18 +339,32 @@ signal_number = signal.SIGTERM if extra[0] == "TERM" else signal.SIGKILL
 try:
     for target_pid, original_task, proc_fd in group:
         before = read_task(target_pid, proc_fd)
-        if before is None or before != original_task:
+        if not same_process_instance(before, original_task):
+            # A previously signaled child can make its verified container
+            # parent exit naturally. Accept only when the whole group is gone.
+            current_group = read_group()
+            if not current_group:
+                break
+            close_group(current_group)
             fail(f"Process {target_pid} changed before pidfd_open")
         try:
             pidfd = os.pidfd_open(target_pid)
         except ProcessLookupError:
+            current_group = read_group()
+            if not current_group:
+                break
+            close_group(current_group)
             continue
         try:
             fdinfo = open(f"/proc/self/fdinfo/{pidfd}", encoding="ascii").read()
             if f"Pid:\t{target_pid}\n" not in fdinfo:
                 fail(f"pidfd does not refer to expected PID {target_pid}")
             current = read_task(target_pid, proc_fd)
-            if current is None or current != original_task:
+            if not same_process_instance(current, original_task):
+                current_group = read_group()
+                if not current_group:
+                    break
+                close_group(current_group)
                 fail(f"pidfd target {target_pid} does not match the verified process instance")
             current_group = read_group()
             if not current_group:
@@ -341,12 +374,12 @@ try:
                     (member for member in current_group if member[0] == target_pid),
                     None,
                 )
-                if current_member is None or current_member[1] != original_task:
+                if current_member is None or not same_process_instance(current_member[1], original_task):
                     fail(f"Process {target_pid} is no longer a verified dashboard group member")
             finally:
                 close_group(current_group)
             current = read_task(target_pid, proc_fd)
-            if current is None or current != original_task:
+            if not same_process_instance(current, original_task):
                 fail(f"Process {target_pid} changed immediately before signaling")
             signal.pidfd_send_signal(pidfd, signal_number)
         finally:
@@ -369,7 +402,7 @@ is_port_in_use() {
 }
 
 if [ ! -f "${PID_FILE}" ]; then
-    log_warning "No dashboard PID file found in ${OUTDIR}"
+    log_warning "No dashboard PID file found in ${DASHBOARD_DIR}"
     log_warning "Dashboard may not be running"
     exit 0
 fi

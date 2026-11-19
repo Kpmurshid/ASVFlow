@@ -29,8 +29,13 @@ else
     exit 1
 fi
 
-# Dashboard state directory
-DASHBOARD_DIR="${OUTDIR}/.asvflow_dashboard"
+# Authoritative lifecycle state must survive deletion of the results directory.
+# Keep a compatibility symlink in OUTDIR for Nextflow and existing tooling.
+OUTDIR_ABS_CHECK="$(realpath -m -- "${OUTDIR}")"
+STATE_ROOT="${ASVFLOW_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/asvflow/dashboard}"
+STATE_KEY="$(printf '%s' "${PROJECT_DIR}:${OUTDIR_ABS_CHECK}" | sha256sum | awk '{print $1}')"
+DASHBOARD_DIR="${STATE_ROOT}/${STATE_KEY}"
+COMPAT_DASHBOARD_DIR="${OUTDIR}/.asvflow_dashboard"
 PID_FILE="${DASHBOARD_DIR}/dashboard.pid"
 LOG_FILE="${DASHBOARD_DIR}/dashboard.log"
 PORT_FILE="${DASHBOARD_DIR}/dashboard.port"
@@ -734,8 +739,16 @@ finally:
 PY
 }
 
+# Migrate pre-existing in-results state on first use, preserving its identity
+# record so an already-running container remains stoppable.
+if [ ! -e "${DASHBOARD_DIR}" ] && [ -d "${COMPAT_DASHBOARD_DIR}" ] && [ ! -L "${COMPAT_DASHBOARD_DIR}" ]; then
+    mkdir -p "${STATE_ROOT}"
+    chmod 700 "${STATE_ROOT}"
+    mv "${COMPAT_DASHBOARD_DIR}" "${DASHBOARD_DIR}"
+fi
 # Create dashboard directory
-mkdir -p "${DASHBOARD_DIR}"
+mkdir -p "${STATE_ROOT}" "${DASHBOARD_DIR}"
+chmod 700 "${STATE_ROOT}" "${DASHBOARD_DIR}"
 if [ -L "${DASHBOARD_DIR}" ] || [ ! -d "${DASHBOARD_DIR}" ]; then
     log_error "Dashboard state path is not a real directory; refusing unsafe metadata writes"
     exit 1
@@ -1088,6 +1101,11 @@ fi
 
 # Create output directory if it doesn't exist
 mkdir -p "${OUTDIR}"
+if [ -e "${COMPAT_DASHBOARD_DIR}" ] && [ ! -L "${COMPAT_DASHBOARD_DIR}" ]; then
+    log_error "${COMPAT_DASHBOARD_DIR} exists as a directory; move it aside before launching"
+    exit 1
+fi
+ln -sfn "${DASHBOARD_DIR}" "${COMPAT_DASHBOARD_DIR}"
 
 # Convert to absolute paths
 OUTDIR_ABS="$(cd "${OUTDIR}" && pwd)"
@@ -1147,7 +1165,16 @@ echo "${OUTDIR_ABS}" > "${OUTDIR_FILE}"
 echo "${DASHBOARD_BIND_ADDRESS}" > "${BIND_ADDRESS_FILE}"
 if ! dashboard_process_helper create "${DASHBOARD_PID}" "${DASHBOARD_PGID}" "${ACTUAL_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}" "${DASHBOARD_SIF_ABS}" "${PROJECT_FILE}" "${OUTDIR_FILE}"; then
     log_error "Could not establish stable process ownership metadata."
-    log_error "No processes were signaled; state files are preserved for manual recovery."
+    # The runtime may have failed before creating a container. Remove only
+    # bookkeeping for an absent/zombie launcher and a confirmed free port.
+    # A live or unverifiable process is left untouched with its state intact.
+    LAUNCHER_STATE="$(ps -o stat= -p "${DASHBOARD_PID}" 2>/dev/null | tr -d ' ' || true)"
+    if { [ -z "${LAUNCHER_STATE}" ] || [[ "${LAUNCHER_STATE}" == Z* || "${LAUNCHER_STATE}" == X* ]]; } && check_port_free_verified "${ACTUAL_PORT}"; then
+        rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}" "${BIND_ADDRESS_FILE}" "${IDENTITY_FILE}"
+        log_warning "Removed state for the failed, inactive launch."
+    else
+        log_error "No processes were signaled; state files are preserved for manual recovery."
+    fi
     exit 1
 fi
 
