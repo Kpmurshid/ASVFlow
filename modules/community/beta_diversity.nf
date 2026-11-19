@@ -62,37 +62,45 @@ process BETA_DIVERSITY {
     saveRDS(dist_bray, "beta_diversity_distances_bray.rds")
     saveRDS(dist_jaccard, "beta_diversity_distances_jaccard.rds")
 
-    # PCoA with correction check
-    pcoa_bray <- pcoa(dist_bray)
-    correction_bray <- "none"
-    if (any(pcoa_bray\$values\$Eigenvalues < 0)) {
-        pcoa_bray <- pcoa(dist_bray, correction="cailliez")
-        correction_bray <- "cailliez"
+    # PCoA can have no axes when all pairwise distances are zero. Keep the
+    # distance matrices above, and report coordinates/variance as unavailable.
+    has_distance_variation <- function(distance) {
+        values <- as.vector(as.matrix(distance))
+        any(is.finite(values) & values > sqrt(.Machine\$double.eps))
     }
-
-    # Check for all-zero Jaccard distance (identical presence/absence profiles)
-    jaccard_skip <- FALSE
-    if (all(as.matrix(dist_jaccard) == 0)) {
-        cat("WARNING: All Jaccard distances are zero (identical presence/absence)\\n")
-        cat("         Skipping Jaccard PCoA - no variation to ordinate\\n")
-        jaccard_skip <- TRUE
-        correction_jaccard <- "skipped"
-    } else {
-        pcoa_jaccard <- pcoa(dist_jaccard)
-        correction_jaccard <- "none"
-        if (any(pcoa_jaccard\$values\$Eigenvalues < 0)) {
-            pcoa_jaccard <- pcoa(dist_jaccard, correction="cailliez")
-            correction_jaccard <- "cailliez"
+    run_pcoa <- function(distance, metric) {
+        if (!has_distance_variation(distance)) {
+            cat("WARNING:", metric, "distances have no variation; ordination unavailable\\n")
+            return(list(result=NULL, correction="unavailable", variance=numeric(0)))
         }
+        result <- pcoa(distance)
+        correction <- "none"
+        if (any(result\$values\$Eigenvalues < 0, na.rm=TRUE)) {
+            result <- pcoa(distance, correction="cailliez")
+            correction <- "cailliez"
+        }
+        # ape omits Relative_eig after Cailliez correction; Rel_corr_eig is
+        # the corrected eigenvalue proportion in that case.
+        proportions <- result\$values\$Relative_eig
+        if (is.null(proportions) || length(proportions) == 0) {
+            proportions <- result\$values\$Rel_corr_eig
+        }
+        if (is.null(proportions)) proportions <- numeric(0)
+        list(result=result, correction=correction, variance=proportions * 100)
     }
 
-    variance_bray <- pcoa_bray\$values\$Relative_eig * 100
-    
-    if (!jaccard_skip) {
-        variance_jaccard <- pcoa_jaccard\$values\$Relative_eig * 100
-    } else {
-        variance_jaccard <- numeric(0)
-    }
+    bray_ordination <- run_pcoa(dist_bray, "Bray-Curtis")
+    jaccard_ordination <- run_pcoa(dist_jaccard, "Jaccard")
+    pcoa_bray <- bray_ordination\$result
+    pcoa_jaccard <- jaccard_ordination\$result
+    correction_bray <- bray_ordination\$correction
+    correction_jaccard <- jaccard_ordination\$correction
+    variance_bray <- bray_ordination\$variance
+    variance_jaccard <- jaccard_ordination\$variance
+    bray_skip <- is.null(pcoa_bray) || length(variance_bray) == 0 ||
+        is.null(pcoa_bray\$vectors) || ncol(pcoa_bray\$vectors) == 0
+    jaccard_skip <- is.null(pcoa_jaccard) || length(variance_jaccard) == 0 ||
+        is.null(pcoa_jaccard\$vectors) || ncol(pcoa_jaccard\$vectors) == 0
 
     # Get metadata
     has_group <- FALSE
@@ -103,29 +111,18 @@ process BETA_DIVERSITY {
     }
 
     # Create output dataframes
-    n_axes <- min(3, ncol(pcoa_bray\$vectors))
-    
-    pcoa_bray_df <- data.frame(
-        sample_id = rownames(otu_nonzero),
-        pcoa_bray\$vectors[, 1:n_axes, drop=FALSE]
-    )
-    colnames(pcoa_bray_df) <- c("sample_id", paste0("PC", 1:n_axes))
-    
-    if (!jaccard_skip) {
-        pcoa_jaccard_df <- data.frame(
-            sample_id = rownames(otu_nonzero),
-            pcoa_jaccard\$vectors[, 1:n_axes, drop=FALSE]
-        )
-        colnames(pcoa_jaccard_df) <- c("sample_id", paste0("PC", 1:n_axes))
-    } else {
-        # Create placeholder with NA values
-        pcoa_jaccard_df <- data.frame(
-            sample_id = rownames(otu_nonzero),
-            PC1 = rep(NA_real_, nrow(otu_nonzero))
-        )
-        if (n_axes >= 2) pcoa_jaccard_df\$PC2 <- NA_real_
-        if (n_axes >= 3) pcoa_jaccard_df\$PC3 <- NA_real_
+    make_pcoa_table <- function(ordination, unavailable, sample_ids) {
+        if (unavailable) {
+            return(data.frame(sample_id=sample_ids, PC1=rep(NA_real_, length(sample_ids))))
+        }
+        n_axes <- min(3, ncol(ordination\$vectors))
+        result <- data.frame(sample_id=sample_ids,
+                             ordination\$vectors[, seq_len(n_axes), drop=FALSE])
+        colnames(result) <- c("sample_id", paste0("PC", seq_len(n_axes)))
+        result
     }
+    pcoa_bray_df <- make_pcoa_table(pcoa_bray, bray_skip, rownames(otu_nonzero))
+    pcoa_jaccard_df <- make_pcoa_table(pcoa_jaccard, jaccard_skip, rownames(otu_nonzero))
 
     if (has_group) {
         pcoa_bray_df\$group <- sample_data_df\$group
@@ -139,23 +136,28 @@ process BETA_DIVERSITY {
 
     # Stats table
     stats_list <- list()
-    for (i in 1:min(10, length(variance_bray))) {
+    n_stats_bray <- if (bray_skip) 0 else min(10, length(variance_bray), ncol(pcoa_bray\$vectors))
+    for (i in seq_len(n_stats_bray)) {
         stats_list[[length(stats_list) + 1]] <- data.frame(
             metric = "Bray-Curtis", PC = i, variance_explained = variance_bray[i]
         )
     }
     if (!jaccard_skip) {
-        for (i in 1:min(10, length(variance_jaccard))) {
+        n_stats_jaccard <- min(10, length(variance_jaccard), ncol(pcoa_jaccard\$vectors))
+        for (i in seq_len(n_stats_jaccard)) {
             stats_list[[length(stats_list) + 1]] <- data.frame(
                 metric = "Jaccard", PC = i, variance_explained = variance_jaccard[i]
             )
         }
     }
-    stats_df <- do.call(rbind, stats_list)
+    stats_df <- if (length(stats_list)) do.call(rbind, stats_list) else
+        data.frame(metric=character(), PC=integer(), variance_explained=numeric())
     write.table(stats_df, "beta_diversity_stats.tsv", sep="\\t", quote=FALSE, row.names=FALSE)
 
     # Generate plots
-    if (nrow(otu_nonzero) >= 2 && n_axes >= 2) {
+    n_axes_bray <- if (bray_skip) 0 else min(3, ncol(pcoa_bray\$vectors))
+    n_axes_jaccard <- if (jaccard_skip) 0 else min(3, ncol(pcoa_jaccard\$vectors))
+    if (nrow(otu_nonzero) >= 2 && n_axes_bray >= 2) {
         pdf("beta_diversity_bray_pcoa.pdf", width=8, height=6)
         if (has_group) {
             p <- ggplot(pcoa_bray_df, aes(x=PC1, y=PC2, color=group)) +
@@ -176,7 +178,7 @@ process BETA_DIVERSITY {
         dev.off()
 
         # Only plot Jaccard if not skipped
-        if (!jaccard_skip) {
+        if (n_axes_jaccard >= 2) {
             pdf("beta_diversity_jaccard_pcoa.pdf", width=8, height=6)
             if (has_group) {
                 p <- ggplot(pcoa_jaccard_df, aes(x=PC1, y=PC2, color=group)) +
@@ -205,13 +207,17 @@ process BETA_DIVERSITY {
     cat("Samples excluded:", n_excluded, "\\n")
     cat("\\nBray-Curtis: per-sample relative abundance\\n")
     cat("  Correction:", correction_bray, "\\n")
-    cat("  PC1:", round(variance_bray[1], 2), "%\\n")
+    if (!bray_skip) {
+        cat("  PC1:", round(variance_bray[1], 2), "%\\n")
+    } else {
+        cat("  PC1: N/A (no distance variation or positive axes)\\n")
+    }
     cat("\\nJaccard: presence/absence\\n")
     cat("  Correction:", correction_jaccard, "\\n")
     if (!jaccard_skip) {
         cat("  PC1:", round(variance_jaccard[1], 2), "%\\n")
     } else {
-        cat("  PC1: N/A (all distances zero - identical presence/absence)\\n")
+        cat("  PC1: N/A (no distance variation or positive axes)\\n")
     }
     sink()
 

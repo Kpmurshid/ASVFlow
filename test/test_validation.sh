@@ -45,8 +45,8 @@ echo ""
 # Test 4: Valid samplesheet
 echo "Test 4: Valid samplesheet"
 OUTPUT=$(python3 bin/validate_samplesheet.py test/samplesheet_synthetic.csv 2>&1)
-[[ "$OUTPUT" == *"Validated 2 samples"* ]] && {
-    echo "PASS: Valid samplesheet accepted"
+[[ "$OUTPUT" == *"Validated 6 samples"* ]] && {
+    echo "PASS: Six-sample synthetic samplesheet accepted"
 } || {
     echo "FAIL: Valid samplesheet rejected"
     exit 1

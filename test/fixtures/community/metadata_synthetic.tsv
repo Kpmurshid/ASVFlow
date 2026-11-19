@@ -1,3 +1,7 @@
-sample_id	group	replicate
-TEST1	GroupA	1
-TEST2	GroupB	1
+sample_id	group	treatment	replicate
+SAMPLE01	Control	Control	1
+SAMPLE02	Control	Control	2
+SAMPLE03	Treatment_A	Treatment_A	1
+SAMPLE04	Treatment_A	Treatment_A	2
+SAMPLE05	Treatment_B	Treatment_B	1
+SAMPLE06	Treatment_B	Treatment_B	2
