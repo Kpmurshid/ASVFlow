@@ -1,81 +1,19 @@
-#!/bin/bash
-# ASVFlow Live Dashboard Test Suite Runner
-# Phase 1.1 - Reliability and Accuracy Tests
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+python3 test/dashboard/test_lifecycle.py
+python3 test/dashboard/test_starter_suid_identity.py
 
-# Color codes
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-echo ""
-echo "=========================================="
-echo "ASVFlow Live Dashboard Test Suite"
-echo "Phase 1.1 - Reliability and Accuracy"
-echo "=========================================="
-echo ""
-
-TOTAL_PASSED=0
-TOTAL_FAILED=0
-TEST_SUITES=0
-
-run_test_suite() {
-    local test_script=$1
-    local test_name=$2
-
-    echo -e "${BLUE}Running: ${test_name}${NC}"
-    echo "=========================================="
-
-    if bash "${test_script}"; then
-        echo -e "${GREEN}✓ ${test_name} PASSED${NC}"
-        TOTAL_PASSED=$((TOTAL_PASSED + 1))
-    else
-        echo -e "${RED}✗ ${test_name} FAILED${NC}"
-        TOTAL_FAILED=$((TOTAL_FAILED + 1))
-    fi
-
-    TEST_SUITES=$((TEST_SUITES + 1))
-    echo ""
-}
-
-# Check if dashboard SIF exists
-if [ ! -f "${SCRIPT_DIR}/../../tools/asvflow-dashboard.sif" ]; then
-    echo -e "${YELLOW}Warning: Dashboard container not found${NC}"
-    echo "Some tests may fail. Build with:"
-    echo "  cd ${SCRIPT_DIR}/../.."
-    if command -v apptainer >/dev/null 2>&1; then
-        echo "  apptainer build tools/asvflow-dashboard.sif containers/dashboard.def"
-    else
-        echo "  singularity build tools/asvflow-dashboard.sif containers/dashboard.def"
-    fi
-    echo ""
-fi
-
-# Run test suites
-run_test_suite "${SCRIPT_DIR}/test_pid_validation.sh" "PID Validation and Stale PID Cleanup"
-run_test_suite "${SCRIPT_DIR}/test_multirun.sh" "Port Conflicts and Multi-Instance"
-run_test_suite "${SCRIPT_DIR}/test_parsers.sh" "Parser Robustness"
-
-# Summary
-echo "=========================================="
-echo "FINAL TEST SUMMARY"
-echo "=========================================="
-echo -e "Test Suites Run: ${TEST_SUITES}"
-echo -e "${GREEN}Passed: ${TOTAL_PASSED}${NC}"
-echo -e "${RED}Failed: ${TOTAL_FAILED}${NC}"
-echo ""
-
-if [ ${TOTAL_FAILED} -eq 0 ]; then
-    echo -e "${GREEN}★ ALL TESTS PASSED ★${NC}"
-    echo ""
-    exit 0
+if command -v apptainer >/dev/null 2>&1; then
+    CONTAINER_RUNTIME=apptainer
+elif command -v singularity >/dev/null 2>&1; then
+    CONTAINER_RUNTIME=singularity
 else
-    echo -e "${RED}Some test suites failed${NC}"
-    echo ""
+    echo "Apptainer or Singularity is required for the output availability test." >&2
     exit 1
 fi
+"$CONTAINER_RUNTIME" exec tools/asvflow-dashboard.sif \
+    python3 test/dashboard/test_output_availability.py

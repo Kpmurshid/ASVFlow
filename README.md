@@ -371,38 +371,15 @@ results/
 
 ## Testing and Validation
 
-### Automated Test Suite
+From the repository root, generate the synthetic FASTQ files and sample sheets, then run the retained validation tests:
 
-The repository includes comprehensive automated tests for all pipeline modules and dashboard functionality.
-
-**Run all tests:**
 ```bash
-# Generate portable synthetic reads and sample sheets (also done by test_validation.sh)
 python3 test/generate_synthetic_data.py
-
-# Pipeline module tests
-./test/test_validation.sh          # QC and trimming modules
-./test/test_dada2.sh               # DADA2 workflow
-./test/test_taxonomy.sh            # Taxonomy assignment
-./test/test_community.sh           # Community analysis
-
-# Dashboard tests
-cd test/dashboard
-./run_all_tests.sh                 # PID validation, multi-instance, parsers
+./test/test_validation.sh
+./test/dashboard/run_all_tests.sh
 ```
 
-**Test data:**
-- Synthetic FASTQ fixtures are generated into `test/` by `test/generate_synthetic_data.py`
-- Portable sample sheets: `test/samplesheet.csv` and `test/samplesheet_synthetic.csv`
-- Edge case fixtures: `test/fixtures/`
-- Community analysis fixtures: `test/fixtures/community/`
-
-**Test coverage:**
-- Module-level validation with stub execution
-- Scientific correctness (taxonomy aggregation, relative abundance calculations)
-- Edge case handling (empty files, missing taxonomy, malformed inputs)
-- Dashboard PID management and parser robustness
-- Multi-instance dashboard isolation
+`test/test_validation.sh` also runs the synthetic data generator, so it can be run directly after cloning. The generator recreates the ignored FASTQ files referenced by the two retained sample sheets. The dashboard runner executes lifecycle, process identity, and incremental output availability tests; it requires Python 3, a C compiler, Apptainer or Singularity, and `tools/asvflow-dashboard.sif`.
 
 ### Validation Status
 
