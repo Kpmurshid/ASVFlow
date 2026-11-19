@@ -7,8 +7,10 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from parsers import OutputScanner
+from components.navigation import render_sidebar_navigation
 
 st.set_page_config(page_title="Sample Explorer", page_icon="🔍", layout="wide")
+render_sidebar_navigation()
 st.title("🔍 Sample Explorer")
 
 if 'scanner' not in st.session_state:

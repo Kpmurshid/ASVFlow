@@ -79,6 +79,8 @@ FINAL_*.txt
 # Dashboard runtime state
 .asvflow_dashboard/
 .streamlit/
+!.streamlit/
+!.streamlit/config.toml
 
 # Additional test/temporary directories
 audit_test_*/

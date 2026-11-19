@@ -16,6 +16,7 @@ import streamlit.components.v1 as components
 sys.path.insert(0, str(Path(__file__).parent))
 
 from parsers import NextflowMonitor, OutputScanner
+from components.navigation import render_sidebar_navigation
 
 
 def parse_args():
@@ -126,6 +127,9 @@ def main():
     }
     </style>
     """, unsafe_allow_html=True)
+
+    # Replace Streamlit's automatic page list with the shared five-page menu.
+    render_sidebar_navigation()
 
     # ========== BRAND SECTION ==========
     logo_path = Path(__file__).parent / "public" / "mkp-logo-sm.png"

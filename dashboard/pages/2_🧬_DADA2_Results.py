@@ -7,8 +7,10 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from parsers import OutputScanner
+from components.navigation import render_sidebar_navigation
 
 st.set_page_config(page_title="DADA2 Results", page_icon="🧬", layout="wide")
+render_sidebar_navigation()
 st.title("🧬 DADA2 Processing Results")
 
 if 'scanner' not in st.session_state or st.session_state.scanner is None:
