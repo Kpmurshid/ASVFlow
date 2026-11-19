@@ -136,6 +136,28 @@ class Lifecycle(unittest.TestCase):
         self.assertTrue((self.out / ".asvflow_dashboard").is_symlink())
         self.assertEqual(self.stop().returncode, 0)
 
+    def test_legacy_directory_is_preserved_when_per_user_state_already_exists(self):
+        self.out.mkdir()
+        legacy = self.out / ".asvflow_dashboard"
+        legacy.mkdir()
+        (legacy / "artifact.html").write_text("legacy artifact")
+        state = self.state_dir()
+        state.mkdir(parents=True)
+        (state / "current-state").write_text("authoritative state")
+
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue((self.out / ".asvflow_dashboard").is_symlink())
+        self.assertEqual((self.out / ".asvflow_dashboard").resolve(), state)
+        self.assertEqual((state / "artifact.html").read_text(), "legacy artifact")
+        self.assertEqual((state / "current-state").read_text(), "authoritative state")
+        archives = list(self.case.glob("results/.asvflow_dashboard.legacy.*"))
+        self.assertEqual(len(archives), 1)
+        self.assertEqual((archives[0] / "artifact.html").read_text(), "legacy artifact")
+
+        self.assertEqual(self.stop().returncode, 0)
+        self.assertEqual(self.stop().returncode, 0)
+
     def test_state_isolated_by_output_directory(self):
         second = self.case / "other"
         p2 = free_port()

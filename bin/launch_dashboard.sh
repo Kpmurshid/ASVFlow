@@ -1102,8 +1102,20 @@ fi
 # Create output directory if it doesn't exist
 mkdir -p "${OUTDIR}"
 if [ -e "${COMPAT_DASHBOARD_DIR}" ] && [ ! -L "${COMPAT_DASHBOARD_DIR}" ]; then
-    log_error "${COMPAT_DASHBOARD_DIR} exists as a directory; move it aside before launching"
-    exit 1
+    # A prior installation can leave a real compatibility directory after
+    # per-user state has already been created. Merge only missing entries so
+    # legacy artifacts remain available and current lifecycle metadata wins.
+    find "${COMPAT_DASHBOARD_DIR}" -mindepth 1 -maxdepth 1 -exec cp -a --update=none -- {} "${DASHBOARD_DIR}/" \;
+    chmod 700 "${DASHBOARD_DIR}"
+
+    # Keep the original tree intact as an archive. Never replace an existing
+    # archive, even if launches happen close together.
+    legacy_archive="${COMPAT_DASHBOARD_DIR}.legacy.$(date +%s).$$"
+    while [ -e "${legacy_archive}" ] || [ -L "${legacy_archive}" ]; do
+        legacy_archive="${COMPAT_DASHBOARD_DIR}.legacy.$(date +%s).$$.${RANDOM}"
+    done
+    mv "${COMPAT_DASHBOARD_DIR}" "${legacy_archive}"
+    log_info "Preserved legacy dashboard directory at ${legacy_archive}"
 fi
 ln -sfn "${DASHBOARD_DIR}" "${COMPAT_DASHBOARD_DIR}"
 
