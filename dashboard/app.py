@@ -16,7 +16,6 @@ import streamlit.components.v1 as components
 sys.path.insert(0, str(Path(__file__).parent))
 
 from parsers import NextflowMonitor, OutputScanner
-from components import render_overview
 
 
 def parse_args():
@@ -259,8 +258,52 @@ def main():
     st.markdown("")  # Spacing
     st.markdown("")  # Spacing
 
-    # Render overview component
-    render_overview(monitor, scanner, selected_run)
+    # ========== TASK EXECUTION SUMMARY ==========
+    task_summary = scanner.get_task_status_summary()
+    st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin: 0.75rem 0 0.5rem; padding-bottom: 0.4rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Task Execution Summary</div>', unsafe_allow_html=True)
+
+    if task_summary['total'] > 0:
+        st.caption("Task statuses from this run's execution trace")
+        metric_cols = st.columns(4)
+        metrics = (
+            ('Executed', task_summary['executed'], '#16a34a'),
+            ('Cached', task_summary['cached'], '#7c3aed'),
+            ('Failed', task_summary['failed'], '#dc2626' if task_summary['failed'] > 0 else '#6b7280'),
+            ('Aborted', task_summary['aborted'], '#6b7280'),
+        )
+        for col, (label, value, color) in zip(metric_cols, metrics):
+            with col:
+                st.markdown(
+                    f'<div style="display:flex; align-items:center; gap:0.45rem; padding:0.35rem 0.6rem; '
+                    f'border:1px solid rgba(128,128,128,0.12); border-radius:6px; background:rgba(128,128,128,0.04);">'
+                    f'<span style="font-size:0.8rem; opacity:0.75">{label}</span>'
+                    f'<strong style="margin-left:auto; color:{color}; font-size:1rem">{value}</strong></div>',
+                    unsafe_allow_html=True,
+                )
+
+        completed_total = task_summary['executed'] + task_summary['cached']
+        progress = completed_total / task_summary['total']
+        st.markdown(
+            f'<div style="display:flex; justify-content:space-between; margin:0.55rem 0 0.25rem; font-size:0.78rem; opacity:0.75">'
+            f'<span>Overall Progress</span><span>{completed_total} / {task_summary["total"]} tasks</span></div>'
+            f'<div role="progressbar" aria-valuenow="{progress * 100:.1f}" aria-valuemin="0" aria-valuemax="100" '
+            f'style="height:5px; border-radius:4px; background:rgba(128,128,128,0.16); overflow:hidden">'
+            f'<div style="height:100%; width:{min(progress * 100, 100):.1f}%; background:#16a34a; border-radius:4px"></div></div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        trace_status = selected_run.get('artifacts', {}).get('trace', {}).get('status', 'Missing')
+        trace_messages = {
+            'Pending': 'Task metrics are pending while this run is active.',
+            'Available': 'The execution trace is available but contains no task rows.',
+            'Missing': 'Task metrics are missing for this invocation.',
+            'Generation failed': 'Nextflow failed to generate the task trace for this invocation.'
+        }
+        st.info(trace_messages.get(trace_status, 'Task metrics are missing for this invocation.'))
+
+    with st.expander("View Run Command"):
+        st.code(selected_run['command'], language='bash')
+    st.caption(f"Output Directory: `{outdir}`")
 
     # ========== QUICK ACCESS SECTION ==========
     st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; margin-top: 2rem; padding-bottom: 0.5rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Quick Access</div>', unsafe_allow_html=True)
