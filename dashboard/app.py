@@ -69,7 +69,7 @@ def main():
     # Shared sidebar brand and legacy multipage navigation.
     render_sidebar_navigation()
 
-    # ========== RUN SELECTOR ==========
+    # RUN SELECTOR
     available_runs = monitor.list_runs()
 
     if not available_runs:
@@ -106,7 +106,7 @@ def main():
     # Scan available outputs for dashboard rendering
     outputs = scanner.scan_available_outputs()
 
-    # ========== SETTINGS SECTION ==========
+    # SETTINGS SECTION
     st.sidebar.markdown('<div class="settings-container"></div>', unsafe_allow_html=True)
 
     auto_refresh = st.sidebar.checkbox(
@@ -128,7 +128,7 @@ def main():
     if st.sidebar.button("🔄 Refresh Now", use_container_width=True, type="secondary"):
         st.rerun()
 
-    # ========== FOOTER ==========
+    # FOOTER
     st.sidebar.markdown(f'''
     <div class="asv-sidebar-footer">
         <div>ASVFlow v2.0.0</div>
@@ -137,7 +137,7 @@ def main():
     ''', unsafe_allow_html=True)
 
     # Main content area - Home/Overview
-    # ========== HEADER SECTION ==========
+    # HEADER SECTION
     render_home_header()
 
     # Run information banner - Compact cards
@@ -174,7 +174,7 @@ def main():
     st.markdown("")  # Spacing
     st.markdown("")  # Spacing
 
-    # ========== TASK EXECUTION SUMMARY ==========
+    # TASK EXECUTION SUMMARY
     task_summary = scanner.get_task_status_summary()
     st.markdown('<div class="asv-section">Task Execution Summary</div>', unsafe_allow_html=True)
 
@@ -225,7 +225,7 @@ def main():
         st.code(selected_run['command'], language='bash')
     st.markdown(f'<div style="margin:.55rem 0 1rem;color:#64798c;font-size:.82rem">Output Directory</div><div style="font: .82rem ui-monospace,monospace;overflow-wrap:anywhere;background:#edf4f7;padding:.8rem 1rem;border-radius:8px;color:#29465d">{escape(str(outdir))}</div>', unsafe_allow_html=True)
 
-    # ========== QUICK ACCESS SECTION ==========
+    # QUICK ACCESS SECTION
     st.markdown('<div class="asv-section">Quick Access</div>', unsafe_allow_html=True)
 
     st.caption("Navigate to detailed analysis pages")
@@ -334,7 +334,7 @@ def main():
     elif report_run_key == selected_run_key and st.session_state.get('quick_access_report_message'):
         st.info(st.session_state.quick_access_report_message)
 
-    # ========== TASK DETAILS SECTION ==========
+    # TASK DETAILS SECTION
     st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; margin-top: 2rem; padding-bottom: 0.5rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Task Execution Details</div>', unsafe_allow_html=True)
 
     # Read the selected invocation's execution trace artifact.

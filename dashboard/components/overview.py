@@ -133,7 +133,7 @@ def render(monitor, scanner, run_info: Dict):
         st.warning("No run selected or no runs available")
         return
 
-    # ========== RUN SUMMARY SECTION ==========
+    # RUN SUMMARY SECTION
     col1, col2, col3, col4 = st.columns([3, 2, 2, 2])
 
     with col1:
@@ -159,7 +159,7 @@ def render(monitor, scanner, run_info: Dict):
 
     st.markdown("")  # Spacing
 
-    # ========== TASK METRICS SECTION ==========
+    # TASK METRICS SECTION
     st.markdown('<div class="section-header">Task Execution Summary</div>', unsafe_allow_html=True)
 
     # Task statistics come from the selected invocation's trace artifact.
@@ -231,7 +231,7 @@ def render(monitor, scanner, run_info: Dict):
 
     st.markdown("")  # Spacing
 
-    # ========== AVAILABLE OUTPUTS SECTION ==========
+    # AVAILABLE OUTPUTS SECTION
     st.markdown('<div class="section-header">Available Outputs</div>', unsafe_allow_html=True)
 
     output_stats = scanner.get_output_stats()
@@ -306,7 +306,7 @@ def render(monitor, scanner, run_info: Dict):
 
     st.markdown("")  # Spacing
 
-    # ========== ADDITIONAL INFORMATION ==========
+    # ADDITIONAL INFORMATION
     # Run command
     with st.expander("View Run Command"):
         st.code(run_info['command'], language='bash')

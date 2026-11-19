@@ -99,7 +99,6 @@ This script will:
 - Pull 10 Apptainer/Singularity container images from public registries (Biocontainers, Docker Hub)
 - Download SILVA v144 reference databases from arb-silva.de
 - Verify MD5 checksums and gzip integrity for downloaded SILVA database files
-- Pull container images from their configured registry references
 - Skip already-downloaded files
 
 **Container sources:**
