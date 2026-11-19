@@ -24,6 +24,96 @@ include { PERMANOVA                 } from './modules/community/permanova.nf'
 
 def asvflowRunMetadataFile = null
 def asvflowRunStartedAtMs = null
+def asvflowDashboardStatus = 'DISABLED'
+def asvflowDashboardUrl = null
+
+// Keep terminal styling out of redirected and captured Nextflow logs.
+def asvflowAnsiEnabled = System.console() != null && !System.getenv().containsKey('NO_COLOR') && System.getenv('TERM') != 'dumb'
+def asvflowPalette = [cyan: '\u001B[36m', blue: '\u001B[34m', white: '\u001B[37m', bold: '\u001B[1m', reset: '\u001B[0m', green: '\u001B[32m', red: '\u001B[31m', yellow: '\u001B[33m']
+def asvflowPaint = { String value, String color -> asvflowAnsiEnabled ? "${asvflowPalette[color]}${value}${asvflowPalette.reset}" : value }
+def asvflowPanel = { String title, List<Map> rows, String statusColor = 'cyan' ->
+    int innerWidth = 72
+    def fitValue = { String value, int width ->
+        if (value.length() <= width) return value
+        int left = Math.max(1, width - 2 - 38)
+        int right = width - 1 - left
+        "${value.substring(0, left)}…${value.substring(value.length() - right)}"
+    }
+    def line = { String text, String color = 'white' ->
+        // Keep panel geometry stable even when a path or URL is unusually long.
+        String content = text.length() > innerWidth ? text.substring(0, innerWidth - 1) + '…' : text
+        String padded = content.padRight(innerWidth)
+        log.info "${asvflowPaint('║', 'cyan')} ${asvflowPaint(padded, color)} ${asvflowPaint('║', 'cyan')}"
+    }
+    log.info asvflowPaint("╔${'═' * (innerWidth + 2)}╗", 'cyan')
+    line(" ${title}", statusColor)
+    log.info asvflowPaint("╟${'─' * (innerWidth + 2)}╢", 'blue')
+    rows.each { row ->
+        if (row.section) {
+            line(" ${row.section}", 'blue')
+        } else {
+            String label = row.label.toString().padRight(20)
+            String value = fitValue(row.value?.toString() ?: '—', innerWidth - label.length() - 2)
+            line(" ${label} ${value}", row.color ?: 'white')
+        }
+    }
+    log.info asvflowPaint("╚${'═' * (innerWidth + 2)}╝", 'cyan')
+}
+def asvflowMode = {
+    def enabled = []
+    if (params.run_dada2) enabled << 'DADA2'
+    if (params.run_taxonomy) enabled << 'TAXONOMY'
+    if (params.run_community_analysis) enabled << 'COMMUNITY ANALYSIS'
+    enabled ? enabled.join(' + ') : 'QC / PREPROCESSING'
+}
+def asvflowPrintBrand = {
+    // 6-row geometric sans-serif glyphs: ASVF (uppercase), low (lowercase)
+    def glyphs = [
+        ['01110', '11011', '11011', '11111', '11011', '11011'], // A
+        ['01111', '11000', '01110', '00011', '00011', '11110'], // S
+        ['11011', '11011', '11011', '01110', '01110', '00100'], // V
+        ['11111', '11000', '11110', '11000', '11000', '11000'], // F
+        ['1100',  '1100',  '1100',  '1100',  '1100',  '0111' ], // l
+        ['00000', '00000', '01110', '11011', '11011', '01110'], // o
+        ['0000000', '0000000', '1100011', '1101011', '1111111', '0110110'] // w
+    ]
+
+    def bgColors = [
+        '\u001B[106m', // A - Bright Cyan
+        '\u001B[104m', // S - Bright Blue
+        '\u001B[105m', // V - Bright Magenta
+        '\u001B[102m', // F - Bright Green
+        '\u001B[103m', // l - Bright Yellow
+        '\u001B[101m', // o - Bright Red
+        '\u001B[106m'  // w - Bright Cyan
+    ]
+    String reset = '\u001B[0m'
+
+    log.info ''
+    (0..5).each { row ->
+        String wordmark = (0..<glyphs.size()).collect { idx ->
+            String pattern = glyphs[idx][row]
+            if (asvflowAnsiEnabled) {
+                pattern.collect { bit ->
+                    bit == '1' ? "${bgColors[idx]}  ${reset}" : '  '
+                }.join('')
+            } else {
+                pattern.replace('1', '@@').replace('0', '  ')
+            }
+        }.join(' ') // Tighter 1-space kerning between letters
+
+        log.info " ${wordmark}"
+    }
+    log.info ''
+
+    if (asvflowAnsiEnabled) {
+        log.info " \u001B[1;97mAMPLICON SEQUENCING PIPELINE\u001B[0m"
+        log.info " \u001B[1;96mASV\u001B[1;92mFlow\u001B[0m \u001B[1;104;97m v1.0.0 \u001B[0m"
+    } else {
+        log.info ' AMPLICON SEQUENCING PIPELINE'
+        log.info ' ASVFlow v1.0.0'
+    }
+}
 
 def writeAsvflowRunMetadata = { File target, Map metadata ->
     target.parentFile.mkdirs()
@@ -78,6 +168,7 @@ workflow {
 
     // Launch dashboard if enabled (before pipeline execution)
     if (params.enable_dashboard) {
+        asvflowDashboardStatus = 'STARTING'
         def dashboard_script = "${projectDir}/bin/launch_dashboard.sh"
         def dashboard_cmd = [
             dashboard_script,
@@ -86,12 +177,6 @@ workflow {
         ].join(' ')
 
         try {
-            log.info ""
-            log.info "═══════════════════════════════════════"
-            log.info "  Starting ASVFlow Live Dashboard"
-            log.info "═══════════════════════════════════════"
-            log.info ""
-
             // Launch dashboard asynchronously
             def dashboard_env = System.getenv().collect { key, value -> "${key}=${value}" }
             dashboard_env.removeAll { it.startsWith('DASHBOARD_BIND_ADDRESS=') }
@@ -129,19 +214,14 @@ workflow {
                                 display_url = "http://${url_host}:${port}"
                             }
 
-                            log.info ""
-                            log.info "╔════════════════════════════════════════╗"
-                            log.info "║  ASVFlow Live Dashboard                ║"
-                            log.info "║  ${display_url.padRight(36)}  ║"
-                            log.info "╚════════════════════════════════════════╝"
-                            log.info ""
-                            log.info "Dashboard is running. Pipeline execution begins now."
-                            log.info ""
+                            asvflowDashboardStatus = 'RUNNING'
+                            asvflowDashboardUrl = display_url
                         } else {
                             log.warn "Dashboard launcher completed but port file not found"
                             log.warn "Expected: ${port_file}"
                         }
                     } else {
+                        asvflowDashboardStatus = 'FAILED TO START'
                         def stdout = dashboard_stdout.toString().trim()
                         def stderr = dashboard_stderr.toString().trim()
                         log.warn "Dashboard launcher exited with code ${exit_val}"
@@ -163,15 +243,39 @@ workflow {
             }
 
             if (!launcher_completed) {
+                asvflowDashboardStatus = 'STARTUP TIMEOUT'
                 log.warn "Dashboard startup timed out after ${timeout_ms/1000} seconds"
                 log.warn "Pipeline will continue. Check dashboard status manually."
             }
 
         } catch (Exception e) {
+            asvflowDashboardStatus = 'FAILED TO START'
             log.warn "Dashboard startup failed (pipeline will continue): ${e.message}"
             log.warn "You can start the dashboard manually with: ${dashboard_cmd}"
         }
     }
+
+    asvflowPrintBrand()
+    def startupRows = [[label: 'Dashboard', value: asvflowDashboardStatus, color: asvflowDashboardStatus == 'RUNNING' ? 'green' : 'yellow']]
+    if (asvflowDashboardUrl) startupRows << [label: 'Dashboard URL', value: asvflowDashboardUrl]
+    startupRows << [label: 'Analysis mode', value: asvflowMode()]
+    startupRows << [section: 'TAXONOMY']
+    startupRows << [label: 'Enabled', value: params.run_taxonomy ? 'YES' : 'NO']
+    startupRows << [label: 'SILVA version', value: params.run_taxonomy ? params.silva_version.toString() : '—']
+    def startupSilvaFiles = [
+        '138.1': [genus: 'silva_nr99_v138.1_train_set.fa.gz', species: 'silva_species_assignment_v138.1.fa.gz'],
+        '144': [genus: 'silva_nr99_v144_toGenus_trainset.fa.gz', species: 'silva_v144_assignSpecies.fa.gz']
+    ]
+    def startupSilva = params.silva_version.toString()
+    def startupGenusRef = params.silva_genus_ref ?: (startupSilvaFiles.containsKey(startupSilva) ? "${params.databases}/silva/${startupSilva}/${startupSilvaFiles[startupSilva].genus}" : 'auto-resolve')
+    startupRows << [label: 'Genus reference', value: params.run_taxonomy ? startupGenusRef.toString() : '—']
+    startupRows << [label: 'Species reference', value: params.run_taxonomy && params.taxonomy_add_species ? (params.silva_species_ref ?: (startupSilvaFiles.containsKey(startupSilva) ? "${params.databases}/silva/${startupSilva}/${startupSilvaFiles[startupSilva].species}" : 'auto-resolve')).toString() : '—']
+    def startupResolution = params.taxonomy_table ? 'EXTERNAL TABLE' : (!params.run_taxonomy ? 'NONE' : (params.taxonomy_add_species ? 'SPECIES' : 'GENUS'))
+    startupRows << [label: 'Resolution level', value: startupResolution]
+    startupRows << [section: 'COMMUNITY ANALYSIS']
+    startupRows << [label: 'Enabled', value: params.run_community_analysis ? 'YES' : 'NO']
+    if (params.run_community_analysis && params.sample_metadata) startupRows << [label: 'Sample metadata', value: params.sample_metadata.toString()]
+    asvflowPanel('PIPELINE START', startupRows)
 
     // Input validation
     if (!params.sample_sheet) {
@@ -377,10 +481,6 @@ workflow {
                 """
             }
 
-            log.info "Taxonomy assignment enabled"
-            log.info "  SILVA version: ${silva_ver}"
-            log.info "  Genus reference: ${genus_ref_path}"
-
             // Stage 1: Assign genus-level taxonomy
             ASSIGN_TAXONOMY(
                 REMOVE_CHIMERAS.out.seqtab_nochim_rds,
@@ -420,8 +520,6 @@ workflow {
                     """
                 }
 
-                log.info "  Species reference: ${species_ref_path}"
-
                 ADD_SPECIES(
                     ASSIGN_TAXONOMY.out.taxonomy_rds,
                     ASSIGN_TAXONOMY.out.taxonomy_tsv,
@@ -433,8 +531,6 @@ workflow {
         // === PART 4: COMMUNITY ANALYSIS ===
         if (params.run_community_analysis) {
 
-            log.info "Community analysis enabled"
-
             // Determine taxonomy input (optional for alpha/beta, required for composition)
             def taxonomy_ch
             def has_taxonomy = false
@@ -442,28 +538,22 @@ workflow {
                 // External taxonomy table provided
                 taxonomy_ch = Channel.fromPath(params.taxonomy_table, checkIfExists: true)
                 has_taxonomy = true
-                log.info "  Using external taxonomy: ${params.taxonomy_table}"
             } else if (params.run_taxonomy && params.taxonomy_add_species) {
                 taxonomy_ch = ADD_SPECIES.out.taxonomy_species_tsv
                 has_taxonomy = true
-                log.info "  Using species-level taxonomy"
             } else if (params.run_taxonomy) {
                 taxonomy_ch = ASSIGN_TAXONOMY.out.taxonomy_tsv
                 has_taxonomy = true
-                log.info "  Using genus-level taxonomy"
             } else {
                 taxonomy_ch = Channel.fromPath("$projectDir/NO_TAXONOMY", checkIfExists: false).ifEmpty(file("$projectDir/NO_TAXONOMY"))
-                log.info "  No taxonomy (composition analysis will be skipped)"
             }
 
             // Optional metadata
             def metadata_ch
             if (params.sample_metadata) {
                 metadata_ch = Channel.fromPath(params.sample_metadata, checkIfExists: true)
-                log.info "  Sample metadata: ${params.sample_metadata}"
             } else {
                 metadata_ch = Channel.fromPath("$projectDir/NO_METADATA", checkIfExists: false).ifEmpty(file("$projectDir/NO_METADATA"))
-                log.info "  No sample metadata (PERMANOVA will be skipped)"
             }
 
             // Prepare inputs
@@ -483,8 +573,6 @@ workflow {
             // Taxonomic composition (only if taxonomy available)
             if (has_taxonomy) {
                 TAXONOMIC_COMPOSITION(PREPARE_INPUTS.out.phyloseq_rds)
-            } else {
-                log.info "  Taxonomic composition skipped (no taxonomy)"
             }
 
             // Sequencing depth (always run)
@@ -497,8 +585,6 @@ workflow {
                     BETA_DIVERSITY.out.dist_bray,
                     BETA_DIVERSITY.out.dist_jaccard
                 )
-            } else {
-                log.info "  PERMANOVA skipped (no metadata)"
             }
         }
     }
@@ -528,11 +614,16 @@ workflow.onComplete {
         status: workflow.success ? 'OK' : 'ERR'
     ])
 
-    log.info ""
-    log.info "Pipeline completed at: ${workflow.complete}"
-    log.info "Execution status: ${workflow.success ? 'SUCCESS' : 'FAILED'}"
-    log.info "Duration: ${workflow.duration}"
-    log.info "Results: ${params.outdir}"
+    def errorText = workflow.errorMessage?.toString()?.toLowerCase() ?: ''
+    def cancelled = !workflow.success && (errorText.contains('cancel') || errorText.contains('abort'))
+    def finalStatus = workflow.success ? 'SUCCESS' : (cancelled ? 'CANCELLED' : 'FAILED')
+    def finalColor = workflow.success ? 'green' : (cancelled ? 'yellow' : 'red')
+    asvflowPanel('PIPELINE COMPLETE', [
+        [label: 'Execution status', value: finalStatus, color: finalColor],
+        [label: 'Output directory', value: params.outdir.toString()],
+        [label: 'Execution duration', value: workflow.duration.toString()],
+        [label: 'Completed at', value: workflow.complete.toString()]
+    ], finalColor)
 
     if (params.enable_dashboard) {
         log.info ""
@@ -540,5 +631,4 @@ workflow.onComplete {
         log.info "Stop with: bin/stop_dashboard.sh ${params.outdir}"
     }
 
-    log.info ""
 }
