@@ -5,6 +5,9 @@ set -euo pipefail
 BASEDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$BASEDIR"
 
+# Generate the ignored synthetic FASTQ fixtures and their portable sheets.
+python3 test/generate_synthetic_data.py >/dev/null
+
 echo "=== ASVFlow Part 1 Input Validation Tests ==="
 echo ""
 
@@ -31,8 +34,8 @@ echo ""
 # Test 3: Input validation - duplicate sample_id
 echo "Test 3: Duplicate sample_id"
 echo "sample_id,fastq_1,fastq_2" > test/duplicate_id.csv
-echo "S94,data/S94_L001_R1_001.fastq.gz,data/S94_L001_R2_001.fastq.gz" >> test/duplicate_id.csv
-echo "S94,data/S95_L001_R1_001.fastq.gz,data/S95_L001_R2_001.fastq.gz" >> test/duplicate_id.csv
+echo "TEST1,test/TEST1_R1.fastq.gz,test/TEST1_R2.fastq.gz" >> test/duplicate_id.csv
+echo "TEST1,test/TEST2_R1.fastq.gz,test/TEST2_R2.fastq.gz" >> test/duplicate_id.csv
 python3 bin/validate_samplesheet.py test/duplicate_id.csv 2>&1 && {
     echo "FAIL: Should have rejected duplicate IDs"
     exit 1
@@ -41,7 +44,8 @@ echo ""
 
 # Test 4: Valid samplesheet
 echo "Test 4: Valid samplesheet"
-python3 bin/validate_samplesheet.py test/samplesheet.csv 2>&1 | grep -q "Validated 2 samples" && {
+OUTPUT=$(python3 bin/validate_samplesheet.py test/samplesheet_synthetic.csv 2>&1)
+[[ "$OUTPUT" == *"Validated 2 samples"* ]] && {
     echo "PASS: Valid samplesheet accepted"
 } || {
     echo "FAIL: Valid samplesheet rejected"
@@ -51,7 +55,8 @@ echo ""
 
 # Test 5: Command-line help
 echo "Test 5: Command-line help"
-python3 bin/validate_samplesheet.py --help 2>&1 | grep -q "Expected CSV format" && {
+OUTPUT=$(python3 bin/validate_samplesheet.py --help 2>&1)
+[[ "$OUTPUT" == *"Expected CSV format"* ]] && {
     echo "PASS: Help message displayed"
 } || {
     echo "FAIL: Help message not displayed"
@@ -74,12 +79,13 @@ echo ""
 echo "Test 7: Blank rows in CSV"
 cat > test/blank_rows.csv <<EOF
 sample_id,fastq_1,fastq_2
-S94,data/S94_L001_R1_001.fastq.gz,data/S94_L001_R2_001.fastq.gz
+TEST1,test/TEST1_R1.fastq.gz,test/TEST1_R2.fastq.gz
 
-S95,data/S95_L001_R1_001.fastq.gz,data/S95_L001_R2_001.fastq.gz
+TEST2,test/TEST2_R1.fastq.gz,test/TEST2_R2.fastq.gz
 ,,
 EOF
-python3 bin/validate_samplesheet.py test/blank_rows.csv 2>&1 | grep -q "Validated 2 samples" && {
+OUTPUT=$(python3 bin/validate_samplesheet.py test/blank_rows.csv 2>&1)
+[[ "$OUTPUT" == *"Validated 2 samples"* ]] && {
     echo "PASS: Blank rows skipped gracefully"
 } || {
     echo "FAIL: Blank rows not handled correctly"
@@ -91,8 +97,8 @@ echo ""
 echo "Test 8: Empty field values"
 cat > test/empty_fields.csv <<EOF
 sample_id,fastq_1,fastq_2
-S94,,data/S94_L001_R2_001.fastq.gz
-,data/S95_L001_R1_001.fastq.gz,data/S95_L001_R2_001.fastq.gz
+TEST1,,test/TEST1_R2.fastq.gz
+,test/TEST2_R1.fastq.gz,test/TEST2_R2.fastq.gz
 EOF
 python3 bin/validate_samplesheet.py test/empty_fields.csv 2>&1 && {
     echo "FAIL: Should have rejected empty fields"
@@ -103,10 +109,10 @@ echo ""
 # Test 9: Truncated gzip file
 echo "Test 9: Truncated gzip file"
 mkdir -p test/tmp
-dd if=data/S94_L001_R1_001.fastq.gz of=test/tmp/truncated_R1.fastq.gz bs=100 count=1 2>/dev/null
+dd if=test/TEST1_R1.fastq.gz of=test/tmp/truncated_R1.fastq.gz bs=100 count=1 2>/dev/null
 cat > test/truncated_gzip.csv <<EOF
 sample_id,fastq_1,fastq_2
-S94,test/tmp/truncated_R1.fastq.gz,data/S94_L001_R2_001.fastq.gz
+TEST1,test/tmp/truncated_R1.fastq.gz,test/TEST1_R2.fastq.gz
 EOF
 python3 bin/validate_samplesheet.py test/truncated_gzip.csv 2>&1 && {
     echo "FAIL: Should have detected truncated gzip"
@@ -119,7 +125,7 @@ echo "Test 10: Invalid gzip file (not gzip format)"
 echo "This is not a gzip file" > test/tmp/not_gzip.fastq.gz
 cat > test/invalid_gzip.csv <<EOF
 sample_id,fastq_1,fastq_2
-S94,test/tmp/not_gzip.fastq.gz,data/S94_L001_R2_001.fastq.gz
+TEST1,test/tmp/not_gzip.fastq.gz,test/TEST1_R2.fastq.gz
 EOF
 python3 bin/validate_samplesheet.py test/invalid_gzip.csv 2>&1 && {
     echo "FAIL: Should have detected invalid gzip format"

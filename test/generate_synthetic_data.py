@@ -98,6 +98,9 @@ def write_fastq_gz(filename, reads):
 def main():
     random.seed(42)  # Reproducible
 
+    test_dir = Path(__file__).resolve().parent
+    test_dir.mkdir(parents=True, exist_ok=True)
+
     n_reads_per_sample = 1000
     read_length = 150
 
@@ -128,24 +131,26 @@ def main():
             r2_reads.append((r2_seq, r2_qual))
 
         # Write to files
-        r1_file = f"test/{sample_id}_R1.fastq.gz"
-        r2_file = f"test/{sample_id}_R2.fastq.gz"
+        r1_path = test_dir / f"{sample_id}_R1.fastq.gz"
+        r2_path = test_dir / f"{sample_id}_R2.fastq.gz"
 
-        write_fastq_gz(r1_file, r1_reads)
-        write_fastq_gz(r2_file, r2_reads)
+        write_fastq_gz(r1_path, r1_reads)
+        write_fastq_gz(r2_path, r2_reads)
 
         print(f"Generated {sample_id}: {n_reads_per_sample} read pairs")
-        print(f"  R1: {r1_file}")
-        print(f"  R2: {r2_file}")
+        print(f"  R1: {r1_path}")
+        print(f"  R2: {r2_path}")
 
-    # Create samplesheet
-    test_dir = Path(__file__).resolve().parent
-    with open('test/samplesheet_synthetic.csv', 'w') as f:
-        f.write("sample_id,fastq_1,fastq_2\n")
-        f.write(f"TEST1,{test_dir}/TEST1_R1.fastq.gz,{test_dir}/TEST1_R2.fastq.gz\n")
-        f.write(f"TEST2,{test_dir}/TEST2_R1.fastq.gz,{test_dir}/TEST2_R2.fastq.gz\n")
+    # Keep paths repository-relative so the generated sheets work on any clone.
+    sheet = (
+        "sample_id,fastq_1,fastq_2\n"
+        "TEST1,test/TEST1_R1.fastq.gz,test/TEST1_R2.fastq.gz\n"
+        "TEST2,test/TEST2_R1.fastq.gz,test/TEST2_R2.fastq.gz\n"
+    )
+    for sheet_name in ("samplesheet_synthetic.csv", "samplesheet.csv"):
+        (test_dir / sheet_name).write_text(sheet, encoding="utf-8")
 
-    print("\nCreated test/samplesheet_synthetic.csv")
+    print("\nCreated test/samplesheet_synthetic.csv and test/samplesheet.csv")
     print(f"\nExpected results:")
     print(f"  - 3 ASVs (from 3 template sequences)")
     bio_r1 = read_length - len(PRIMER_FWD)

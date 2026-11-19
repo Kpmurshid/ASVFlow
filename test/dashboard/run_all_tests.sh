@@ -48,7 +48,11 @@ if [ ! -f "${SCRIPT_DIR}/../../tools/asvflow-dashboard.sif" ]; then
     echo -e "${YELLOW}Warning: Dashboard container not found${NC}"
     echo "Some tests may fail. Build with:"
     echo "  cd ${SCRIPT_DIR}/../.."
-    echo "  singularity build tools/asvflow-dashboard.sif containers/dashboard.def"
+    if command -v apptainer >/dev/null 2>&1; then
+        echo "  apptainer build tools/asvflow-dashboard.sif containers/dashboard.def"
+    else
+        echo "  singularity build tools/asvflow-dashboard.sif containers/dashboard.def"
+    fi
     echo ""
 fi
 

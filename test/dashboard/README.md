@@ -7,7 +7,9 @@ Automated test suite for Phase 1.1 reliability and accuracy improvements. Tests 
 ## Requirements
 
 - Bash 4.0+
-- Python 3.8+
+- Python 3.9+
+- Linux 5.1+ with `/proc` mounted (pidfd support is required for safe signaling)
+- `setsid`, GNU `stat`, and `curl`; `ss` or `lsof` is recommended for port checks
 - Singularity/Apptainer
 - Dashboard container built: `tools/asvflow-dashboard.sif`
 
@@ -117,4 +119,4 @@ rm -rf /tmp/dashboard_parser_test_*
 - Tests require dashboard container to be built
 - Some tests may fail if ports 8501-8520 are in use
 - Parser tests use lightweight fixtures (no full pipeline needed)
-- Process identity checks are Singularity-specific
+- Process identity checks support both Apptainer and Singularity process names

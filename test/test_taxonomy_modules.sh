@@ -3,12 +3,18 @@
 
 set -uo pipefail
 
+CONTAINER_RUNTIME="$(command -v apptainer || command -v singularity || true)"
+if [[ -z "$CONTAINER_RUNTIME" ]]; then
+    echo "ERROR: Apptainer or Singularity is required"
+    exit 1
+fi
+
 echo "=== ASVFlow Part 3 Taxonomy Module Tests ==="
 echo
 
 # Generate test fixtures
 echo "Generating test fixtures..."
-singularity exec tools/asvflow-dada2.sif Rscript test/fixtures/create_taxonomy_fixtures.R > /dev/null 2>&1
+"$CONTAINER_RUNTIME" exec tools/asvflow-dada2.sif Rscript test/fixtures/create_taxonomy_fixtures.R > /dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo "FAIL: Failed to generate test fixtures"
     exit 1

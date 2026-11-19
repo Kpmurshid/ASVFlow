@@ -6,10 +6,10 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS_DIR="$PROJECT_DIR/tools"
 DB_DIR="$PROJECT_DIR/databases/silva/144"
 
-RUNTIME="$(command -v singularity || command -v apptainer || true)"
+RUNTIME="$(command -v apptainer || command -v singularity || true)"
 
 if [[ -z "$RUNTIME" ]]; then
-    echo "ERROR: Singularity or Apptainer is required."
+    echo "ERROR: Apptainer or Singularity is required."
     exit 1
 fi
 

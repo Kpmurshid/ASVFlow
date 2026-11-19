@@ -100,7 +100,7 @@ class StarterSuidIdentityTests(unittest.TestCase):
             "identity": {
                 "uid": os.getuid(), "start_ticks": 12345,
                 "exe": task["exe"], "exe_state": task["exe_state"],
-                "cmdline_sha256": hashlib.sha256(self.cmdline).hexdigest(),
+                "cmdline_sha256": hashlib.sha256(task["cmdline"]).hexdigest(),
             },
         })
         return ns["leader_matches"](task)
@@ -159,6 +159,19 @@ class StarterSuidIdentityTests(unittest.TestCase):
             task = self.task(exe=None, exe_state="inaccessible")
             self.assertTrue(self.matches(ns, task), script)
 
+    def test_apptainer_runtime_is_accepted_by_both_helpers(self):
+        cmdline = (
+            f"/usr/bin/apptainer\0exec\0container.sif\0streamlit\0run\0"
+            f"{ROOT}/dashboard/app.py\0--server.port=8501\0--outdir\0{self.outdir}\0"
+        ).encode()
+        task = self.task(
+            exe="/usr/bin/apptainer",
+            cmdline=cmdline,
+        )
+        for script in ("launch_dashboard.sh", "stop_dashboard.sh"):
+            ns = helper_functions(script)
+            self.assertTrue(self.matches(ns, task), script)
+
     def test_read_task_records_permission_denied_without_losing_process(self):
         ns = helper_functions("launch_dashboard.sh")
         with mock.patch.object(os, "readlink", side_effect=PermissionError(13, "denied")):
@@ -206,7 +219,8 @@ class StarterSuidIdentityTests(unittest.TestCase):
             ns = helper_functions(script)
             accepted = {
                 "state": "S", "pgrp": self.pgid, "session": self.pgid,
-                "start_ticks": 22345, "uid": os.getuid(), "exe": "/usr/local/bin/python3.12",
+            "start_ticks": 22345, "uid": os.getuid(), "ppid": self.pgid,
+            "exe": "/usr/local/bin/python3.12",
                 "exe_state": "readable", "cmdline": child_cmdline,
             }
             self.assertTrue(ns["is_dashboard_member"](accepted, self.project, self.port, self.outdir, os.getuid(), self.pgid), script)

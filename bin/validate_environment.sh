@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS="$ROOT/tools"
 DATA="$ROOT/data"
 
-RUNTIME="$(command -v singularity || command -v apptainer || true)"
+RUNTIME="$(command -v apptainer || command -v singularity || true)"
 
 if [[ -z "$RUNTIME" ]]; then
     echo "ERROR: Singularity/Apptainer not found"

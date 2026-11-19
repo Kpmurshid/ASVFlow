@@ -5,9 +5,10 @@
 set -e
 
 # Default values
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTDIR="${1:-results}"
 PORT="${2:-8501}"
-DASHBOARD_SIF="${3:-tools/asvflow-dashboard.sif}"
+DASHBOARD_SIF="${3:-${PROJECT_DIR}/tools/asvflow-dashboard.sif}"
 DASHBOARD_BIND_ADDRESS="${DASHBOARD_BIND_ADDRESS:-}"
 if [ -z "${DASHBOARD_BIND_ADDRESS}" ]; then
     if command -v tailscale >/dev/null 2>&1; then
@@ -18,8 +19,15 @@ if [ -z "${DASHBOARD_BIND_ADDRESS}" ]; then
     fi
     DASHBOARD_BIND_ADDRESS="${DASHBOARD_BIND_ADDRESS:-127.0.0.1}"
 fi
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DASHBOARD_SIF_ABS="$(cd "$(dirname "${DASHBOARD_SIF}")" && pwd)/$(basename "${DASHBOARD_SIF}")"
+if command -v apptainer >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="$(command -v apptainer)"
+elif command -v singularity >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="$(command -v singularity)"
+else
+    echo "[Dashboard] ERROR: Neither Apptainer nor Singularity was found in PATH" >&2
+    exit 1
+fi
 
 # Dashboard state directory
 DASHBOARD_DIR="${OUTDIR}/.asvflow_dashboard"
@@ -742,7 +750,7 @@ if [ ! -f "${DASHBOARD_SIF}" ]; then
     log_error "Dashboard container not found: ${DASHBOARD_SIF}"
     log_error "Please build the container first:"
     log_error "  cd ${PROJECT_DIR}"
-    log_error "  singularity build ${DASHBOARD_SIF} containers/dashboard.def"
+    log_error "  ${CONTAINER_RUNTIME} build ${DASHBOARD_SIF} containers/dashboard.def"
     exit 1
 fi
 
@@ -1096,7 +1104,7 @@ export STREAMLIT_SERVER_ADDRESS="${DASHBOARD_BIND_ADDRESS}"
 export STREAMLIT_SERVER_HEADLESS=true
 export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
-setsid singularity exec \
+setsid "${CONTAINER_RUNTIME}" exec \
     -B "${PROJECT_DIR}:${PROJECT_DIR}:ro" \
     -B "${OUTDIR_ABS}:${OUTDIR_ABS}:ro" \
     --pwd "${PROJECT_DIR}" \

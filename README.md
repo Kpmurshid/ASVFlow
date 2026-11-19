@@ -49,6 +49,7 @@ ASVFlow Live Dashboard [optional]
 
 ### Prerequisites
 
+- **Java** ≥ 11
 - **Nextflow** ≥ 21.04.0
 - **Singularity** ≥ 3.7 or **Apptainer** ≥ 1.0
 - **curl** (for downloading reference databases)
@@ -71,30 +72,44 @@ For large datasets (>100 samples):
 
 ```bash
 git clone https://github.com/Kpmurshid/ASVFlow.git
-cd asvflow
+cd ASVFlow
 ```
 
-### 2. Download Container Images and Reference Databases
+### 2. Install Nextflow
 
-Run the setup script to download all required Singularity containers and SILVA reference files:
+ASVFlow supports **Nextflow 21.04.0 or newer**. Install Java 11 or newer, then install Nextflow:
+
+```bash
+curl -s https://get.nextflow.io | bash
+sudo install nextflow /usr/local/bin/nextflow
+nextflow -version
+```
+
+If you install Nextflow elsewhere, ensure its location is on `PATH` before running ASVFlow.
+
+### 3. Download Container Images and Reference Databases
+
+Run the setup script to download all required Apptainer/Singularity container images and SILVA reference files:
 
 ```bash
 ./bin/download_tools.sh
 ```
 
 This script will:
-- Pull 9 Singularity containers from public registries (Biocontainers, Docker Hub)
+- Pull 10 Apptainer/Singularity container images from public registries (Biocontainers, Docker Hub)
 - Download SILVA v144 reference databases from arb-silva.de
-- Verify checksums for all downloaded files
+- Verify MD5 checksums and gzip integrity for downloaded SILVA database files
+- Pull container images from their configured registry references
 - Skip already-downloaded files
 
 **Container sources:**
-- `asvflow-dada2.sif` → `docker://quay.io/biocontainers/bioconductor-dada2:1.38.0`
-- `asvflow-trim.sif` → `docker://quay.io/biocontainers/cutadapt:5.2`
-- `asvflow-qc.sif` → `docker://quay.io/biocontainers/fastqc:0.13.0`
+- `asvflow-dada2.sif` → `docker://quay.io/biocontainers/bioconductor-dada2:1.38.0--r45ha27e39d_0`
+- `asvflow-trim.sif` → `docker://quay.io/biocontainers/cutadapt:5.2--py312hfabe715_2`
+- `asvflow-qc.sif` → `docker://quay.io/biocontainers/fastqc:0.13.0--hdfd78af_0`
 - `asvflow-multiqc.sif` → `docker://multiqc/multiqc:v1.35`
 - `asvflow-stats.sif` → `oras://registry-1.docker.io/kpmurshid/asvflow-stats:bioc-3.22-r4.5.2`
 - `asvflow-report.sif` → `oras://registry-1.docker.io/kpmurshid/asvflow-report:python-3.12`
+- `asvflow-dashboard.sif` → `oras://registry-1.docker.io/kpmurshid/asvflow-dashboard:streamlit-1.35.0-numpy-1.26.4-pyarrow-16.1.0`
 - Additional tools: seqkit, mafft, fasttree from Biocontainers
 
 **Database downloads:**
@@ -103,17 +118,17 @@ This script will:
 
 **Total download size:** ~3.7 GB (containers: ~3.2 GB, databases: ~526 MB)
 
-### 3. Verify Installation
+### 4. Verify Installation
 
 ```bash
 ./bin/validate_environment.sh
 ```
 
-This checks for required executables and verifies that containers and databases are present.
+This checks that expected container images are present and their tools can run. It also checks available FASTQ files under `data/`; reference databases are required when taxonomy is enabled.
 
 ## Offline Usage
 
-Once containers and databases are downloaded, the pipeline can run offline. All dependencies are self-contained in the Singularity images, and reference databases are stored locally in `databases/silva/144/`.
+Once containers and databases are downloaded, the pipeline can run offline. All dependencies are self-contained in the Apptainer/Singularity images, and reference databases are stored locally in `databases/silva/144/`.
 
 ## Input Data
 
@@ -267,6 +282,17 @@ nextflow run main.nf -resume --sample_sheet samplesheet.csv [other options]
 
 The ASVFlow Live dashboard provides run monitoring and interactive visualization of completed pipeline outputs.
 
+### Dashboard Host Requirements
+
+- Linux with `/proc` mounted and a kernel that supports pidfds (Linux 5.1 or newer)
+- Bash 4 or newer, Python 3.9 or newer, `setsid`, GNU `stat`, and `curl`
+- Apptainer 1.0 or newer or Singularity 3.7 or newer; the launcher uses Apptainer when both runtimes are installed
+- `ss` or `lsof` is recommended for reliable port-conflict detection
+
+Dashboard process ownership checks use Python's `os.pidfd_open` and `signal.pidfd_send_signal` APIs. Dashboard launch and stop rely on Linux process metadata and are not supported on non-Linux systems.
+
+When `tailscale` is available, the launcher binds to its IPv4 address; otherwise it binds to `127.0.0.1`. Set `DASHBOARD_BIND_ADDRESS=127.0.0.1` to force loopback, or use `--dashboard_bind_address` when starting through Nextflow.
+
 ### Features
 
 - **Run Overview**: Pipeline execution status and task summary
@@ -351,6 +377,9 @@ The repository includes comprehensive automated tests for all pipeline modules a
 
 **Run all tests:**
 ```bash
+# Generate portable synthetic reads and sample sheets (also done by test_validation.sh)
+python3 test/generate_synthetic_data.py
+
 # Pipeline module tests
 ./test/test_validation.sh          # QC and trimming modules
 ./test/test_dada2.sh               # DADA2 workflow
@@ -363,7 +392,8 @@ cd test/dashboard
 ```
 
 **Test data:**
-- Synthetic FASTQ fixtures: `test/*.fastq.gz`
+- Synthetic FASTQ fixtures are generated into `test/` by `test/generate_synthetic_data.py`
+- Portable sample sheets: `test/samplesheet.csv` and `test/samplesheet_synthetic.csv`
 - Edge case fixtures: `test/fixtures/`
 - Community analysis fixtures: `test/fixtures/community/`
 
@@ -386,7 +416,7 @@ The pipeline has been validated using:
 
 ### Container Issues
 
-**Problem:** `Singularity not found`
+**Problem:** Apptainer/Singularity not found
 ```bash
 # Install Apptainer (newer alternative to Singularity)
 # On Ubuntu/Debian:
@@ -402,7 +432,7 @@ sudo apt install apptainer
 ./bin/download_tools.sh
 
 # Check network connectivity and registry availability
-singularity pull docker://quay.io/biocontainers/fastqc:0.13.0--hdfd78af_0
+apptainer pull fastqc.sif docker://quay.io/biocontainers/fastqc:0.13.0--hdfd78af_0
 ```
 
 ### Pipeline Errors
