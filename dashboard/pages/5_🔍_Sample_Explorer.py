@@ -1,166 +1,111 @@
-import streamlit as st
+"""Focused per-sample exploration of ASV, taxonomy, and available metrics."""
+
 import sys
 from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from parsers import OutputScanner
 from components.navigation import render_sidebar_navigation
+from components.presentation import render_page_header, section_heading, style_figure
 
 st.set_page_config(page_title="Sample Explorer", page_icon="🔍", layout="wide")
 render_sidebar_navigation()
-st.title("🔍 Sample Explorer")
-
-if 'scanner' not in st.session_state:
+render_page_header("Sample Explorer", "Inspect one sample at a time across its abundance, taxonomy, and diversity results.", "🔍")
+if "scanner" not in st.session_state or st.session_state.scanner is None:
     st.error("No run selected. Go to Home page.")
     st.stop()
-
 scanner = st.session_state.scanner
-
-# Get available samples from ASV table
-seqtab_df = scanner.get_dada2_seqtab()
-
-if seqtab_df is None:
-    st.warning("⏳ ASV table not yet available")
-    st.info("Sample explorer requires completed DADA2 processing.")
+seqtab = scanner.get_dada2_seqtab()
+if seqtab is None:
+    st.info("Sample exploration requires the completed DADA2 ASV table.")
     st.stop()
 
-samples = seqtab_df.columns.tolist()
+samples = seqtab.columns.tolist()
+if not samples:
+    st.info("The ASV table contains no sample columns.")
+    st.stop()
+selected_sample = st.selectbox("Sample", samples)
+counts = pd.to_numeric(seqtab[selected_sample], errors="coerce").fillna(0)
+positive = counts[counts > 0].sort_values(ascending=False)
+total_reads = int(counts.sum())
 
-st.subheader("Select Sample")
-selected_sample = st.selectbox("Sample ID", samples)
+section_heading("Sample summary", "Read totals and detected ASVs from the final non-chimeric ASV table.")
+c1, c2, c3, c4 = st.columns(4)
+with c1: st.metric("Sample ID", selected_sample)
+with c2: st.metric("Total reads", f"{total_reads:,}")
+with c3: st.metric("ASVs detected", f"{len(positive):,}")
+with c4: st.metric("Top 10 ASVs", f"{positive.head(10).sum() / total_reads * 100:.1f}%" if total_reads else "—")
 
-if selected_sample:
-    st.divider()
-    st.subheader(f"📊 Sample: {selected_sample}")
-
-    # Get sample data
-    sample_asvs = seqtab_df[selected_sample]
-    sample_asvs = sample_asvs[sample_asvs > 0].sort_values(ascending=False)
-
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric("Total Reads", f"{sample_asvs.sum():,}")
-
-    with col2:
-        st.metric("ASVs Detected", len(sample_asvs))
-
-    with col3:
-        if len(sample_asvs) > 0:
-            top10_pct = (sample_asvs.head(10).sum() / sample_asvs.sum()) * 100
-            st.metric("Top 10 ASVs %", f"{top10_pct:.1f}%")
-
-    with col4:
-        # Get alpha diversity if available
-        alpha_df = scanner.get_alpha_diversity()
-        if alpha_df is not None and selected_sample in alpha_df['sample_id'].values:
-            shannon = alpha_df[alpha_df['sample_id'] == selected_sample]['Shannon'].values[0]
-            st.metric("Shannon Index", f"{shannon:.2f}")
+tab1, tab2, tab3 = st.tabs(["🧬 ASV Abundance", "🦠 Taxonomy", "📊 Sample Context"])
+with tab1:
+    section_heading("ASV abundance", "Abundance distribution for this sample.")
+    if not positive.empty:
+        if len(positive) > 5:
+            top_n = st.slider("ASVs to display", 5, min(50, len(positive)), min(20, len(positive)))
         else:
-            st.metric("Shannon Index", "N/A")
-
-    st.divider()
-
-    # ASV abundance distribution
-    st.markdown("### ASV Abundance Distribution")
-
-    fig = px.bar(x=sample_asvs.index, y=sample_asvs.values,
-                title=f"ASV Abundance in {selected_sample}",
-                labels={'x': 'ASV_ID', 'y': 'Read Count'})
-    fig.update_layout(xaxis_tickangle=-45, showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Top ASVs with taxonomy
-    st.markdown("### Top ASVs with Taxonomy")
-
-    tax_df = scanner.get_taxonomy()
-
-    if tax_df is not None:
-        top_asvs = sample_asvs.head(20)
-
-        # Merge with taxonomy
-        top_df = pd.DataFrame({
-            'ASV_ID': top_asvs.index,
-            'Read_Count': top_asvs.values
-        })
-
-        # Add taxonomy
-        tax_lookup = tax_df.set_index('ASV_ID')
-        for col in ['Phylum', 'Class', 'Order', 'Family', 'Genus']:
-            if col in tax_lookup.columns:
-                top_df[col] = top_df['ASV_ID'].map(tax_lookup[col])
-
-        # Calculate percentage
-        top_df['Percentage'] = (top_df['Read_Count'] / sample_asvs.sum() * 100).round(2)
-
-        st.dataframe(top_df, use_container_width=True)
-
-        # Taxonomic composition pie chart at genus level
-        if 'Genus' in top_df.columns:
-            st.markdown("### Taxonomic Composition (Top 10 Genera)")
-
-            genus_abund = {}
-            for idx, row in top_df.iterrows():
-                genus = row['Genus'] if pd.notna(row['Genus']) else 'Unclassified'
-                count = row['Read_Count']
-                genus_abund[genus] = genus_abund.get(genus, 0) + count
-
-            genus_df = pd.DataFrame({
-                'Genus': list(genus_abund.keys()),
-                'Abundance': list(genus_abund.values())
-            }).sort_values('Abundance', ascending=False).head(10)
-
-            fig = px.pie(genus_df, values='Abundance', names='Genus',
-                        title=f"Genus-level Composition (Top 10)")
-            st.plotly_chart(fig, use_container_width=True)
+            top_n = len(positive)
+            st.caption(f"Showing all {top_n} detected ASVs.")
+        top = positive.head(top_n)
+        chart_data = pd.DataFrame({"ASV_ID": top.index.astype(str), "Read_Count": top.values,
+                                   "Relative_Abundance_%": (top.values / total_reads * 100).round(2) if total_reads else 0})
+        fig = px.bar(chart_data, x="ASV_ID", y="Read_Count", labels={"ASV_ID": "ASV identifier", "Read_Count": "Read count"},
+                     title=f"Top {len(top)} ASVs in {selected_sample}", color_discrete_sequence=["#2878d0"],
+                     hover_data=["Relative_Abundance_%"])
+        fig.update_xaxes(tickangle=-35)
+        st.plotly_chart(style_figure(fig, 420), use_container_width=True)
+        st.dataframe(pd.DataFrame({"ASV_ID": positive.index, "Read_Count": positive.values,
+                                   "Relative_Abundance_%": (positive.values / total_reads * 100).round(2)}),
+                     use_container_width=True, height=380, hide_index=True)
     else:
-        st.info("Taxonomy not available - showing ASV IDs only")
-        st.dataframe(pd.DataFrame({
-            'ASV_ID': sample_asvs.head(20).index,
-            'Read_Count': sample_asvs.head(20).values,
-            'Percentage': (sample_asvs.head(20) / sample_asvs.sum() * 100).round(2).values
-        }), use_container_width=True)
+        st.info("No non-zero ASV counts were recorded for this sample.")
 
-    st.divider()
+with tab2:
+    section_heading("Taxonomy", "Top ASVs joined to their existing taxonomy assignments, when available.")
+    taxonomy = scanner.get_taxonomy()
+    if taxonomy is not None:
+        top = positive.head(30)
+        table = pd.DataFrame({"ASV_ID": top.index, "Read_Count": top.values})
+        table["Relative_Abundance_%"] = (table["Read_Count"] / total_reads * 100).round(2) if total_reads else 0
+        taxonomy_cols = [c for c in ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"] if c in taxonomy]
+        if "ASV_ID" in taxonomy:
+            table = table.merge(taxonomy[["ASV_ID"] + taxonomy_cols].drop_duplicates("ASV_ID"), on="ASV_ID", how="left")
+        st.dataframe(table, use_container_width=True, height=440, hide_index=True)
+        if "Genus" in table:
+            genus = (table.assign(Genus=table["Genus"].fillna("Unclassified"))
+                     .groupby("Genus", as_index=False)["Read_Count"].sum()
+                     .sort_values("Read_Count", ascending=False).head(10))
+            fig = px.bar(genus, x="Genus", y="Read_Count", title="Most abundant genera among displayed ASVs",
+                         color_discrete_sequence=["#7456b8"])
+            fig.update_xaxes(tickangle=-35)
+            st.plotly_chart(style_figure(fig, 350), use_container_width=True)
+    else:
+        st.info("Taxonomy assignments are not available; ASV identifiers and abundance are shown.")
+        st.dataframe(pd.DataFrame({"ASV_ID": positive.head(30).index, "Read_Count": positive.head(30).values}),
+                     use_container_width=True, hide_index=True)
 
-    # Compare to other samples
-    st.markdown("### Compare to Other Samples")
-
-    all_sample_totals = seqtab_df.sum(axis=0).sort_values(ascending=False)
-    current_rank = list(all_sample_totals.index).index(selected_sample) + 1
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.info(f"**Read Count Rank:** {current_rank} of {len(samples)}")
-
-    with col2:
-        percentile = ((len(samples) - current_rank) / len(samples)) * 100
-        st.info(f"**Percentile:** {percentile:.1f}%")
-
-    # Bar chart showing this sample in context
-    fig = go.Figure()
-
-    colors = ['steelblue' if s != selected_sample else 'red' for s in all_sample_totals.index]
-
-    fig.add_trace(go.Bar(
-        x=all_sample_totals.index,
-        y=all_sample_totals.values,
-        marker_color=colors
-    ))
-
-    fig.update_layout(
-        title=f"Read Counts Across All Samples (selected sample in red)",
-        xaxis_title="Sample",
-        yaxis_title="Total Reads",
-        xaxis_tickangle=-45,
-        showlegend=False
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-st.caption("💡 Select different samples to explore their ASV composition and compare across the dataset")
+with tab3:
+    section_heading("Sample context", "Compare total reads across samples and show diversity only when available.")
+    totals = seqtab.sum(axis=0).sort_values(ascending=False)
+    rank = int(totals.index.get_loc(selected_sample)) + 1
+    a, b = st.columns(2)
+    with a: st.metric("Read count rank", f"{rank} of {len(totals)}")
+    with b: st.metric("Read count percentile", f"{(len(totals) - rank) / len(totals) * 100:.1f}%")
+    colors = ["#20c5d8" if sample == selected_sample else "#9bb6c8" for sample in totals.index]
+    fig = px.bar(x=totals.index, y=totals.values, labels={"x": "Sample", "y": "Total reads"},
+                 title="Read depth across samples", color_discrete_sequence=["#9bb6c8"])
+    fig.update_traces(marker_color=colors, hovertemplate="%{x}<br>%{y:,} reads<extra></extra>")
+    fig.update_xaxes(tickangle=-35)
+    st.plotly_chart(style_figure(fig, 400), use_container_width=True)
+    alpha = scanner.get_alpha_diversity()
+    if alpha is not None and {"sample_id", "Shannon"}.issubset(alpha.columns):
+        row = alpha[alpha["sample_id"].astype(str) == str(selected_sample)]
+        if not row.empty:
+            st.metric("Shannon diversity", f"{float(row.iloc[0]['Shannon']):.2f}")
+    tracking = scanner.get_dada2_track_reads()
+    if tracking is not None and {"sample_id", "nonchim"}.issubset(tracking.columns):
+        row = tracking[tracking["sample_id"].astype(str) == str(selected_sample)]
+        if not row.empty:
+            st.metric("Non-chimeric reads (tracking)", f"{float(row.iloc[0]['nonchim']):,.0f}")

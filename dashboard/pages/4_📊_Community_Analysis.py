@@ -1,173 +1,129 @@
-import streamlit as st
+"""Community diversity and composition exploration."""
+
 import sys
 from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from parsers import OutputScanner
 from components.navigation import render_sidebar_navigation
+from components.presentation import render_page_header, section_heading, style_figure
 
 st.set_page_config(page_title="Community Analysis", page_icon="📊", layout="wide")
 render_sidebar_navigation()
-st.title("📊 Community Analysis")
-
-if 'scanner' not in st.session_state:
+render_page_header("Community Analysis", "Compare within-sample diversity, between-sample structure, and taxonomic composition.", "📊")
+if "scanner" not in st.session_state or st.session_state.scanner is None:
     st.error("No run selected. Go to Home page.")
     st.stop()
-
 scanner = st.session_state.scanner
 outputs = scanner.scan_available_outputs()
-
-# Check if community analysis is available
-if not any(outputs['community'].values()):
-    st.warning("⚠️ Community analysis not available")
-    st.info("""Community analysis is **optional** in ASVFlow.
-
-    To enable it, run the pipeline with:
-    ```
-    nextflow run main.nf --run_community true --metadata metadata.tsv ...
-    ```
-
-    Community analysis provides:
-    - Alpha diversity metrics (Observed, Chao1, Shannon, Simpson)
-    - Beta diversity with PCoA ordination (Bray-Curtis, Jaccard)
-    - Taxonomic composition summaries
-    - Statistical testing (PERMANOVA)
-    """)
+if not any(outputs["community"].values()):
+    st.info("Community analysis is optional and is not available for this run. Enable it with `--run_community true` and provide sample metadata.")
     st.stop()
 
 tab1, tab2, tab3 = st.tabs(["📈 Alpha Diversity", "🗺️ Beta Diversity", "🧬 Composition"])
 
 with tab1:
-    st.subheader("Alpha Diversity Metrics")
-
-    alpha_df = scanner.get_alpha_diversity()
-
-    if alpha_df is not None:
-        st.success(f"✅ Alpha diversity calculated for {len(alpha_df)} samples")
-
-        # Summary statistics
-        valid_samples = alpha_df[alpha_df['status'] == 'ok']
-
-        if len(valid_samples) > 0:
-            col1, col2, col3, col4 = st.columns(4)
-
-            metrics = ['Observed', 'Chao1', 'Shannon', 'Simpson']
-            for col, metric in zip([col1, col2, col3, col4], metrics):
-                if metric in valid_samples.columns:
-                    mean_val = valid_samples[metric].mean()
-                    with col:
-                        st.metric(f"Mean {metric}", f"{mean_val:.2f}")
-
-            st.divider()
-
-            # Box plots for each metric
-            st.markdown("### Alpha Diversity Distribution")
-
-            metric_select = st.selectbox("Select metric", metrics)
-
-            if 'group' in valid_samples.columns:
-                fig = px.box(valid_samples, x='group', y=metric_select,
-                           title=f"{metric_select} by Group",
-                           points="all")
+    section_heading("Alpha diversity", "Per-sample diversity estimates from the pipeline output.")
+    alpha = scanner.get_alpha_diversity()
+    if alpha is not None:
+        valid = alpha[alpha["status"].astype(str).str.lower() == "ok"] if "status" in alpha else alpha
+        metrics = [m for m in ["Observed", "Chao1", "Shannon", "Simpson"] if m in valid]
+        if not valid.empty and metrics:
+            cols = st.columns(len(metrics))
+            for col, metric in zip(cols, metrics):
+                with col: st.metric(f"Mean {metric}", f"{pd.to_numeric(valid[metric], errors='coerce').mean():.2f}")
+            metric = st.selectbox("Diversity metric", metrics)
+            chart = valid.copy()
+            chart[metric] = pd.to_numeric(chart[metric], errors="coerce")
+            if "group" in chart and chart["group"].notna().any():
+                fig = px.box(chart, x="group", y=metric, color="group", points="all", title=f"{metric} by group")
             else:
-                fig = px.box(valid_samples, y=metric_select,
-                           title=f"{metric_select} Distribution",
-                           points="all")
-
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Full data table
-            st.markdown("### Full Alpha Diversity Table")
-            st.dataframe(alpha_df, use_container_width=True)
-
-            csv = alpha_df.to_csv(index=False)
-            st.download_button("📥 Download Alpha Diversity", csv,
-                             "alpha_diversity.csv", "text/csv")
+                fig = px.strip(chart, y=metric, hover_name="sample_id" if "sample_id" in chart else None,
+                               title=f"{metric} across samples", color_discrete_sequence=["#087e8b"])
+            fig.update_yaxes(title=metric)
+            st.plotly_chart(style_figure(fig, 400), use_container_width=True)
         else:
-            st.warning("No valid samples with alpha diversity data")
-            st.dataframe(alpha_df, use_container_width=True)
+            st.info("No valid alpha-diversity measurements are available.")
+        with st.expander("Alpha diversity table", expanded=True):
+            st.dataframe(alpha, use_container_width=True, hide_index=True)
+        st.download_button("📥 Download alpha diversity", alpha.to_csv(index=False), "alpha_diversity.csv", "text/csv")
     else:
-        st.warning("⏳ Alpha diversity not yet available")
+        st.info("Alpha diversity is not available yet.")
 
 with tab2:
-    st.subheader("Beta Diversity - PCoA Ordination")
-
+    section_heading("Beta diversity", "Inspect principal coordinate analysis for the selected distance metric.")
     metric = st.radio("Distance metric", ["Bray-Curtis", "Jaccard"], horizontal=True)
-    metric_key = 'bray' if metric == "Bray-Curtis" else 'jaccard'
-
-    pcoa_df = scanner.get_beta_diversity_pcoa(metric=metric_key)
-
-    if pcoa_df is not None:
-        st.success(f"✅ {metric} PCoA coordinates available")
-
-        st.markdown(f"### PCoA Plot - {metric}")
-
-        # Check if we have PC1 and PC2
-        if 'PC1' in pcoa_df.columns and 'PC2' in pcoa_df.columns:
-
-            if 'group' in pcoa_df.columns:
-                fig = px.scatter(pcoa_df, x='PC1', y='PC2', color='group',
-                               hover_data=['sample_id'],
-                               title=f"PCoA - {metric}")
+    key = "bray" if metric == "Bray-Curtis" else "jaccard"
+    pcoa = scanner.get_beta_diversity_pcoa(metric=key)
+    if pcoa is not None:
+        coordinate_cols = [c for c in ["PC1", "PC2"] if c in pcoa]
+        valid = pcoa.dropna(subset=coordinate_cols) if coordinate_cols else pcoa.copy()
+        if {"PC1", "PC2"}.issubset(pcoa.columns) and not valid.empty:
+            group_col = "group" if "group" in valid and valid["group"].notna().any() else None
+            fig = px.scatter(valid, x="PC1", y="PC2", color=group_col, hover_name="sample_id" if "sample_id" in valid else None,
+                             text="sample_id" if "sample_id" in valid else None,
+                             title=f"{metric} PCoA", color_discrete_sequence=None)
+            fig.update_traces(marker=dict(size=11, line=dict(width=1, color="white")), textposition="top center")
+            stats_path = Path(scanner.outdir) / "community" / "beta_diversity_stats.tsv"
+            if stats_path.is_file():
+                try:
+                    stats = pd.read_csv(stats_path, sep="\t")
+                    row1 = stats[(stats["metric"] == metric) & (stats["PC"] == 1)]
+                    row2 = stats[(stats["metric"] == metric) & (stats["PC"] == 2)]
+                    xlab = f"PC1 ({float(row1.iloc[0]['variance_explained']):.1f}%)" if not row1.empty else "PC1"
+                    ylab = f"PC2 ({float(row2.iloc[0]['variance_explained']):.1f}%)" if not row2.empty else "PC2"
+                    fig.update_xaxes(title=xlab); fig.update_yaxes(title=ylab)
+                except (OSError, ValueError, KeyError, IndexError, TypeError):
+                    fig.update_xaxes(title="PC1"); fig.update_yaxes(title="PC2")
             else:
-                fig = px.scatter(pcoa_df, x='PC1', y='PC2',
-                               hover_data=['sample_id'],
-                               title=f"PCoA - {metric}")
-
-            fig.update_traces(marker=dict(size=10))
-            fig.update_layout(width=800, height=600)
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Coordinates table
-            st.markdown("### PCoA Coordinates")
-            st.dataframe(pcoa_df, use_container_width=True)
-
-            csv = pcoa_df.to_csv(index=False)
-            st.download_button(f"📥 Download {metric} PCoA", csv,
-                             f"pcoa_{metric_key}.csv", "text/csv")
+                fig.update_xaxes(title="PC1"); fig.update_yaxes(title="PC2")
+            st.plotly_chart(style_figure(fig, 500), use_container_width=True)
+            # Display PERMANOVA only when the corresponding analysis output exists.
+            perm_path = Path(scanner.outdir) / "community" / f"permanova_{key}.tsv"
+            if perm_path.is_file():
+                try:
+                    perm = pd.read_csv(perm_path, sep="\t", index_col=0)
+                    if not perm.empty:
+                        st.caption(f"{metric} PERMANOVA (pipeline output)")
+                        st.dataframe(perm, use_container_width=True)
+                except (OSError, ValueError):
+                    st.info("PERMANOVA output exists but could not be read.")
+            with st.expander("PCoA coordinates", expanded=False):
+                st.dataframe(pcoa, use_container_width=True, hide_index=True)
+            st.download_button(f"📥 Download {metric} PCoA", pcoa.to_csv(index=False), f"pcoa_{key}.csv", "text/csv")
         else:
-            st.warning("PCoA coordinates incomplete")
-            st.dataframe(pcoa_df, use_container_width=True)
+            st.info(f"{metric} coordinates do not contain usable PC1 and PC2 values.")
     else:
-        st.warning(f"⏳ {metric} PCoA not yet available")
+        st.info(f"{metric} PCoA is not available yet.")
 
 with tab3:
-    st.subheader("Taxonomic Composition from Community Module")
-
-    rank = st.selectbox("Taxonomic rank", ['Phylum', 'Genus'], key='comm_rank')
-    rank_lower = rank.lower()
-
-    comp_df = scanner.get_taxonomic_composition(rank=rank_lower, abundance_type='relabund')
-
-    if comp_df is not None:
-        st.success(f"✅ {rank}-level composition available")
-
-        st.markdown(f"### Relative Abundance at {rank} Level")
-
-        # Stacked bar chart
-        fig = px.bar(comp_df.T, x=comp_df.T.index, y=comp_df.T.columns,
-                    title=f"{rank} Composition Across Samples",
-                    labels={'value': 'Relative Abundance (%)', 'index': 'Sample'})
-        fig.update_layout(xaxis_tickangle=-45)
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Data table
-        st.markdown("### Composition Data (%)")
-        st.dataframe(comp_df, use_container_width=True)
-
-        csv = comp_df.to_csv()
-        st.download_button(f"📥 Download {rank} Composition", csv,
-                         f"composition_{rank_lower}.csv", "text/csv")
+    section_heading("Community composition", "Explore pipeline-provided relative abundance or count tables.")
+    c1, c2 = st.columns([1, 2])
+    with c1: rank = st.selectbox("Taxonomic rank", ["Phylum", "Genus"], key="comm_rank")
+    with c2: abundance = st.radio("Abundance", ["Relative (%)", "Counts"], horizontal=True, key="comm_abundance")
+    rank_key = rank.lower()
+    kind = "relabund" if abundance == "Relative (%)" else "counts"
+    composition = scanner.get_taxonomic_composition(rank=rank_key, abundance_type=kind)
+    if composition is not None:
+        samples = st.multiselect("Samples", composition.columns.tolist(), default=composition.columns.tolist(), key="community_samples")
+        data = composition.loc[:, samples]
+        if len(data) > 5:
+            top_n = st.slider("Top taxa by mean abundance", 5, min(30, len(data)), min(10, len(data)), key="community_top")
+        else:
+            top_n = len(data)
+            st.caption(f"Showing all {top_n} available taxa.")
+        selected = data.mean(axis=1).sort_values(ascending=False).head(top_n).index
+        plot = data.loc[selected].copy()
+        if len(data) > top_n:
+            plot.loc["Other"] = data.drop(index=selected).sum(axis=0)
+        fig = px.bar(plot.T, x=plot.T.index, y=plot.T.columns, barmode="stack",
+                     labels={"x": "Sample", "value": abundance, "variable": rank}, title=f"{rank} abundance by sample")
+        fig.update_xaxes(tickangle=-35)
+        st.plotly_chart(style_figure(fig, 450), use_container_width=True)
+        st.dataframe(data, use_container_width=True, height=380)
+        st.download_button(f"📥 Download {rank} {abundance.lower()}", composition.to_csv(), f"composition_{rank_key}_{kind}.csv", "text/csv")
     else:
-        st.warning(f"⏳ {rank} composition not yet available")
-
-st.divider()
-st.caption("""💡 **About Community Analysis:**
-- Alpha diversity: within-sample diversity
-- Beta diversity: between-sample differences
-- PCoA: Principal Coordinates Analysis for visualization
-- Requires --run_community true and metadata file
-""")
+        st.info(f"{rank} {abundance.lower()} output is not available.")

@@ -1,142 +1,65 @@
-"""
-QC Results Page - ASVFlow Live Dashboard Phase 2
+"""QC report explorer for MultiQC and individual FastQC outputs."""
 
-Display FastQC and MultiQC quality control reports.
-"""
-
-import streamlit as st
-import streamlit.components.v1 as components
 import sys
 from pathlib import Path
 
+import streamlit as st
+import streamlit.components.v1 as components
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from parsers import OutputScanner
 from components.navigation import render_sidebar_navigation
+from components.presentation import render_page_header, section_heading
 
 st.set_page_config(page_title="QC Results", page_icon="🔬", layout="wide")
 render_sidebar_navigation()
+render_page_header("Quality Control", "Review run-level summaries and inspect read quality sample by sample.", "🔬")
 
-st.title("🔬 Quality Control Results")
-
-# Check session state
-if 'scanner' not in st.session_state or st.session_state.scanner is None:
+if "scanner" not in st.session_state or st.session_state.scanner is None:
     st.error("No run selected. Please go to the Home page and select a run.")
     st.stop()
 
 scanner = st.session_state.scanner
 outputs = scanner.scan_available_outputs()
-
-# QC Results tabs
 tab1, tab2 = st.tabs(["📊 MultiQC Reports", "📈 Individual FastQC"])
 
 with tab1:
-    st.subheader("MultiQC Aggregated Reports")
-
-    # Horizontal selector for report type
-    report_type = st.radio(
-        "Select report type:",
-        options=["Raw Reads", "Trimmed Reads"],
-        horizontal=True,
-        key="multiqc_selector"
-    )
-
-    # Display selected report at full width
-    if report_type == "Raw Reads":
-        if outputs['qc']['raw_multiqc']:
-            report_path = outputs['qc']['raw_multiqc']
-            st.success(f"✅ Report available: `{report_path.name}`")
-
-            # Read HTML content
-            with open(report_path, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-
-            # Display in iframe at full width
-            components.html(html_content, height=800, scrolling=True)
-
-            # Download button
-            st.download_button(
-                label="📥 Download Raw MultiQC Report",
-                data=html_content,
-                file_name="raw_multiqc_report.html",
-                mime="text/html"
-            )
+    section_heading("MultiQC reports", "Aggregated quality summaries for raw and trimmed reads.")
+    raw_report = outputs["qc"].get("raw_multiqc")
+    trimmed_report = outputs["qc"].get("trimmed_multiqc")
+    choices = ["Raw Reads", "Trimmed Reads"]
+    report_type = st.radio("Report", choices, horizontal=True, key="multiqc_selector",
+                           format_func=lambda x: f"{'●' if (raw_report if x == 'Raw Reads' else trimmed_report) else '○'}  {x}")
+    report_path = raw_report if report_type == "Raw Reads" else trimmed_report
+    status_col, detail_col = st.columns([1, 3])
+    with status_col:
+        if report_path:
+            st.success("Report available")
         else:
-            st.warning("⏳ Raw reads MultiQC report not yet available")
-    
-    else:  # Trimmed Reads
-        if outputs['qc']['trimmed_multiqc']:
-            report_path = outputs['qc']['trimmed_multiqc']
-            st.success(f"✅ Report available: `{report_path.name}`")
-
-            with open(report_path, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-
-            components.html(html_content, height=800, scrolling=True)
-
-            st.download_button(
-                label="📥 Download Trimmed MultiQC Report",
-                data=html_content,
-                file_name="trimmed_multiqc_report.html",
-                mime="text/html"
-            )
-        else:
-            st.warning("⏳ Trimmed reads MultiQC report not yet available")
+            st.info("Report pending or unavailable")
+    with detail_col:
+        st.caption(f"Selected report: {report_path.name}" if report_path else f"No {report_type.lower()} MultiQC report was found for this run.")
+    if report_path:
+        html_content = report_path.read_text(encoding="utf-8")
+        components.html(html_content, height=740, scrolling=True)
+        st.download_button(f"📥 Download {report_type} MultiQC report", html_content,
+                           f"{report_type.split()[0].lower()}_multiqc_report.html", "text/html")
 
 with tab2:
-    st.subheader("Individual Sample FastQC Reports")
-
-    raw_fastqc = outputs['qc']['raw_fastqc']
-    trimmed_fastqc = outputs['qc']['trimmed_fastqc']
-
-    if raw_fastqc or trimmed_fastqc:
-        # Horizontal selector for read type
-        read_type = st.radio(
-            "Select read type:",
-            options=["Raw Reads", "Trimmed Reads"],
-            horizontal=True,
-            key="fastqc_selector"
-        )
-
-        # Display selected FastQC reports at full width
-        if read_type == "Raw Reads":
-            if raw_fastqc:
-                st.caption(f"{len(raw_fastqc)} FastQC reports available")
-
-                selected_raw = st.selectbox(
-                    "Select raw FastQC report",
-                    raw_fastqc,
-                    format_func=lambda x: x.name,
-                    key="raw_fastqc_select"
-                )
-
-                if selected_raw:
-                    with open(selected_raw, 'r', encoding='utf-8') as f:
-                        html_content = f.read()
-
-                    components.html(html_content, height=800, scrolling=True)
-            else:
-                st.info("No raw FastQC reports found")
-        
-        else:  # Trimmed Reads
-            if trimmed_fastqc:
-                st.caption(f"{len(trimmed_fastqc)} FastQC reports available")
-
-                selected_trimmed = st.selectbox(
-                    "Select trimmed FastQC report",
-                    trimmed_fastqc,
-                    format_func=lambda x: x.name,
-                    key="trimmed_fastqc_select"
-                )
-
-                if selected_trimmed:
-                    with open(selected_trimmed, 'r', encoding='utf-8') as f:
-                        html_content = f.read()
-
-                    components.html(html_content, height=800, scrolling=True)
-            else:
-                st.info("No trimmed FastQC reports found")
+    section_heading("Individual FastQC reports", "Select a read set, then move between sample reports using the file selector.")
+    raw_fastqc = sorted(outputs["qc"].get("raw_fastqc", []), key=lambda p: p.name.lower())
+    trimmed_fastqc = sorted(outputs["qc"].get("trimmed_fastqc", []), key=lambda p: p.name.lower())
+    read_type = st.radio("Read set", ["Raw Reads", "Trimmed Reads"], horizontal=True, key="fastqc_selector")
+    reports = raw_fastqc if read_type == "Raw Reads" else trimmed_fastqc
+    other_reports = trimmed_fastqc if read_type == "Raw Reads" else raw_fastqc
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric(f"{read_type} reports", len(reports))
+    with c2:
+        st.metric("Other read set", len(other_reports))
+    if reports:
+        selected = st.selectbox("Sample / report", reports, format_func=lambda p: p.name,
+                                key=f"{read_type.lower().split()[0]}_fastqc_select")
+        st.caption(f"Viewing {selected.name}")
+        components.html(selected.read_text(encoding="utf-8"), height=740, scrolling=True)
     else:
-        st.info("No FastQC reports available yet")
-
-st.divider()
-st.caption("💡 **Tip:** Use MultiQC reports for a quick overview across all samples, then dive into individual FastQC reports for detailed per-sample analysis.")
+        st.info(f"No {read_type.lower()} FastQC reports are available for this run.")

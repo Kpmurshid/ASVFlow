@@ -3,6 +3,7 @@
 import streamlit as st
 
 from components.theme import apply_theme, render_brand
+from components.presentation import apply_page_css
 
 
 _PAGE_LINKS = (
@@ -18,6 +19,7 @@ _PAGE_LINKS = (
 def render_sidebar_navigation():
     """Render the shared brand and six legacy multipage links."""
     apply_theme()
+    apply_page_css()
     with st.sidebar:
         render_brand()
         for page_path, label, icon in _PAGE_LINKS:
