@@ -21,6 +21,9 @@ include { BETA_DIVERSITY            } from './modules/community/beta_diversity.n
 include { TAXONOMIC_COMPOSITION     } from './modules/community/taxonomic_composition.nf'
 include { SEQUENCING_DEPTH          } from './modules/community/sequencing_depth.nf'
 include { PERMANOVA                 } from './modules/community/permanova.nf'
+include { EXTRACT_ASV_SEQUENCES     } from './modules/phylogeny/extract_sequences.nf'
+include { ALIGN_ASV_SEQUENCES       } from './modules/phylogeny/align_sequences.nf'
+include { BUILD_ASV_PHYLOGENY       } from './modules/phylogeny/build_tree.nf'
 
 def asvflowRunMetadataFile = null
 def asvflowRunStartedAtMs = null
@@ -64,6 +67,7 @@ def asvflowMode = {
     if (params.run_dada2) enabled << 'DADA2'
     if (params.run_taxonomy) enabled << 'TAXONOMY'
     if (params.run_community_analysis) enabled << 'COMMUNITY ANALYSIS'
+    if (params.run_phylogenetic_analysis) enabled << 'PHYLOGENETIC ANALYSIS'
     enabled ? enabled.join(' + ') : 'QC / PREPROCESSING'
 }
 def asvflowPrintBrand = {
@@ -144,6 +148,10 @@ def resolveAsvflowArtifactPath = { String option, String configuredPath ->
 }
 
 workflow {
+
+    if (params.run_phylogenetic_analysis && !params.run_dada2) {
+        error "Phylogenetic analysis requires DADA2. Enable it with --run_dada2 true."
+    }
     // Nextflow creates workflow.start before it initializes trace/report observers.
     asvflowRunStartedAtMs = workflow.start.toInstant().toEpochMilli()
     def runKey = "${workflow.runName}_${workflow.sessionId}_${params.asvflow_invocation_id}".replaceAll(/[^A-Za-z0-9_.-]/, '_')
@@ -275,6 +283,8 @@ workflow {
     startupRows << [section: 'COMMUNITY ANALYSIS']
     startupRows << [label: 'Enabled', value: params.run_community_analysis ? 'YES' : 'NO']
     if (params.run_community_analysis && params.sample_metadata) startupRows << [label: 'Sample metadata', value: params.sample_metadata.toString()]
+    startupRows << [section: 'PHYLOGENETIC ANALYSIS']
+    startupRows << [label: 'Enabled', value: params.run_phylogenetic_analysis ? 'YES' : 'NO']
     asvflowPanel('PIPELINE START', startupRows)
 
     // Input validation
@@ -406,6 +416,16 @@ workflow {
 
         // Chimera removal
         REMOVE_CHIMERAS(MAKE_SEQUENCE_TABLE.out.seqtab_rds)
+
+        if (params.run_phylogenetic_analysis) {
+            EXTRACT_ASV_SEQUENCES(REMOVE_CHIMERAS.out.seqtab_nochim_rds)
+            ALIGN_ASV_SEQUENCES(EXTRACT_ASV_SEQUENCES.out.sequences)
+            BUILD_ASV_PHYLOGENY(
+                ALIGN_ASV_SEQUENCES.out.alignment,
+                ALIGN_ASV_SEQUENCES.out.status,
+                file("${projectDir}/bin/validate_newick.sh")
+            )
+        }
 
         // === PART 3: TAXONOMY ASSIGNMENT ===
         if (params.run_taxonomy) {

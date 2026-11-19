@@ -17,3 +17,5 @@ else
 fi
 "$CONTAINER_RUNTIME" exec tools/asvflow-dashboard.sif \
     python3 test/dashboard/test_output_availability.py
+"$CONTAINER_RUNTIME" exec tools/asvflow-dashboard.sif \
+    python3 test/dashboard/test_phylogeny.py

@@ -23,6 +23,7 @@ class OutputScanner:
             'sequencing_depth', 'comp_phylum_counts', 'comp_phylum_relabund',
             'comp_genus_counts', 'comp_genus_relabund',
         ),
+        'phylogeny': ('tree', 'alignment', 'status'),
     }
 
     def __init__(self, outdir: str, run_info: Optional[Dict] = None):
@@ -128,6 +129,10 @@ class OutputScanner:
             outputs['community']['comp_genus_counts'] = self._find_file('community/composition_genus_counts.tsv')
             outputs['community']['comp_genus_relabund'] = self._find_file('community/composition_genus_relabund.tsv')
 
+        outputs['phylogeny']['tree'] = self._find_file('phylogeny/asv_tree.nwk')
+        outputs['phylogeny']['alignment'] = self._find_file('phylogeny/asv_alignment.fasta')
+        outputs['phylogeny']['status'] = self._find_file('phylogeny/phylogeny_status.txt')
+
         # Nextflow reports
         report_states = {}
         artifact_keys = {
@@ -217,6 +222,7 @@ class OutputScanner:
             'dada2_available': any(outputs['dada2'].values()),
             'taxonomy_available': any(outputs['taxonomy'].values()),
             'community_available': any(outputs['community'].values()),
+            'phylogeny_available': outputs['phylogeny']['tree'] is not None,
             'reports_available': any(outputs['report_states'].get(key) == 'Available' for key in outputs['reports'])
         }
 

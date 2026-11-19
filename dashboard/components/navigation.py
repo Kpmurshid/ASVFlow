@@ -13,11 +13,12 @@ _PAGE_LINKS = (
     ("pages/3_🦠_Taxonomy.py", "Taxonomy", "🦠"),
     ("pages/4_📊_Community_Analysis.py", "Community Analysis", "📊"),
     ("pages/5_🔍_Sample_Explorer.py", "Sample Explorer", "🔍"),
+    ("pages/6_🌳_Phylogenetic_Analysis.py", "Phylogenetic Analysis", "🌳"),
 )
 
 
 def render_sidebar_navigation():
-    """Render the shared brand and six legacy multipage links."""
+    """Render the shared brand and dashboard page links."""
     apply_theme()
     apply_page_css()
     with st.sidebar:

@@ -10,12 +10,15 @@ Taxonomy is off by default. `--run_taxonomy true` assigns taxonomy with DADA2's 
 
 Community analysis is off by default and requires DADA2. When enabled, alpha diversity, beta diversity (Bray-Curtis and Jaccard), and sequencing-depth outputs are generated. Taxonomic composition is generated only when an internal or external taxonomy table is available. PERMANOVA is generated only when sample metadata is supplied. An external taxonomy table can be supplied using `--taxonomy_table`.
 
+Phylogenetic analysis is also optional (`--run_phylogenetic_analysis true`) and requires DADA2. It extracts representative sequences from the nonchimeric sequence table, aligns them with the bundled MAFFT image, and infers an unrooted Newick tree with the bundled FastTree image. It does not calculate Faith's PD or UniFrac.
+
 | Stage | Control | Default |
 |---|---|---|
 | Primer removal | `--primer_mode paired\|none`, `--primer_fwd`, `--primer_rev` | Paired; primer sequences required |
 | DADA2 | `--run_dada2` | `true` |
 | Taxonomy | `--run_taxonomy`, `--taxonomy_add_species` | `false`, `false` |
 | Community analysis | `--run_community_analysis` | `false` |
+| Phylogenetic analysis | `--run_phylogenetic_analysis` | `false` |
 | Dashboard | `--enable_dashboard` | `false` |
 
 ## Requirements and setup
@@ -31,7 +34,7 @@ Install Nextflow using its official installation instructions, then from the rep
 ./bin/download_tools.sh
 ```
 
-The script pulls ten images into `tools/`: DADA2 (`bioconductor-dada2:1.38.0`), Cutadapt (`cutadapt:5.2`), FastQC (`fastqc:0.13.0`), MultiQC (`multiqc:v1.35`), ASVFlow stats, dashboard and report images, and SeqKit, MAFFT and FastTree. Stats and dashboard images are the published ASVFlow images named in `bin/download_tools.sh`; the report and extra sequence-tool images are downloaded but are not called by the current workflow. The setup script downloads SILVA v144 DADA2-formatted genus, species-training, and species-assignment files under `databases/silva/144/`. Taxonomy can instead use SILVA v138.1 references obtained separately or user-supplied references. Reference files are not committed to the repository.
+The script pulls ten images into `tools/`: DADA2 (`bioconductor-dada2:1.38.0`), Cutadapt (`cutadapt:5.2`), FastQC (`fastqc:0.13.0`), MultiQC (`multiqc:v1.35`), ASVFlow stats, dashboard and report images, and SeqKit, MAFFT and FastTree. Stats and dashboard images are the published ASVFlow images named in `bin/download_tools.sh`; MAFFT and FastTree are used by optional phylogenetic analysis. The report and SeqKit images are not called by the workflow. The setup script downloads SILVA v144 DADA2-formatted genus, species-training, and species-assignment files under `databases/silva/144/`. Taxonomy can instead use SILVA v138.1 references obtained separately or user-supplied references. Reference files are not committed to the repository.
 
 The dashboard image contains Python 3.12 with Streamlit 1.35.0, NumPy 1.26.4, pandas 2.2.2, PyArrow 16.1.0, Plotly 5.22.0, and watchdog 4.0.1. Community analysis runs in the stats image, which supplies R, phyloseq and vegan.
 
@@ -85,6 +88,7 @@ nextflow run main.nf \
   --run_taxonomy true \
   --taxonomy_add_species true \
   --run_community_analysis true \
+  --run_phylogenetic_analysis true \
   --sample_metadata metadata.tsv \
   --outdir results/my_run
 ```
@@ -115,6 +119,7 @@ nextflow run main.nf -resume --sample_sheet samplesheet.csv --primer_mode none -
 | `--silva_version`, `--silva_genus_ref`, `--silva_species_ref` | `144`, unset, unset | Reference version and optional explicit paths |
 | `--taxonomy_min_boot`, `--taxonomy_tryrc` | `50`, `true` | DADA2 classifier settings |
 | `--run_community_analysis` | `false` | Enable community analyses |
+| `--run_phylogenetic_analysis` | `false` | Align nonchimeric ASV sequences and infer an unrooted Newick tree |
 | `--sample_metadata`, `--taxonomy_table` | unset, unset | Optional metadata and external taxonomy TSV |
 | `--composition_top_n`, `--permanova_nperm`, `--permanova_seed` | `10`, `999`, `123` | Composition and PERMANOVA settings |
 | `--enable_dashboard`, `--dashboard_port`, `--dashboard_bind_address` | `false`, `8501`, unset | Launch dashboard; bind address defaults to Tailscale IPv4 if available, otherwise loopback |
@@ -167,12 +172,15 @@ Directories below are published under the selected `--outdir`; individual files 
 │   └── final/                       # Non-chimeric table, FASTA, read tracking, chimera stats
 ├── taxonomy/                        # Taxonomy table/statistics; species outputs if enabled
 ├── community/                       # Prepared inputs, diversity, composition, depth, PERMANOVA
+├── phylogeny/                       # Representative FASTA, ID map, alignment, Newick tree and status
 └── .asvflow_dashboard/
     ├── artifacts/<invocation-id>/   # Nextflow trace, report and timeline
     └── runs/                        # Run metadata used by dashboard selection
 ```
 
 Community outputs include `alpha_diversity.tsv` and PDF, Bray-Curtis/Jaccard PCoA TSV/PDF and statistics, `sequencing_depth.tsv` and related statistics/rarefaction files, composition tables/plots when taxonomy is available, and PERMANOVA results when metadata is provided. The dashboard state location may be in the user's state directory as described above.
+
+When enabled, `phylogeny/` contains `asv_sequences.fasta`, `asv_sequence_ids.tsv`, `asv_alignment.fasta`, and `phylogeny_status.txt`. `asv_tree.nwk` is also produced when there is at least one sequence: one ASV gets a valid single-leaf Newick string, while two or more get a FastTree result. Empty input is reported in the status file and produces no tree. The dashboard displays these states instead of drawing them as an inferred multi-ASV tree.
 
 ## Tests and synthetic data
 
@@ -195,7 +203,7 @@ The validation script also regenerates synthetic data. Dashboard tests require P
 
 - The workflow accepts paired-end reads and provides a 16S-oriented DADA2 analysis. ITS support is not verified and should not be assumed.
 - Taxonomy uses DADA2-compatible SILVA references; other taxonomy databases are not configured by the workflow.
-- Phylogenetic diversity metrics such as UniFrac are not generated by the current community modules.
+- Faith's PD and UniFrac are not generated.
 - Taxonomy, species addition, community analysis, and the dashboard are optional stages/features as described above.
 
 ## References
