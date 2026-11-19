@@ -10,6 +10,7 @@ import sys
 import argparse
 from pathlib import Path
 import time
+from html import escape
 import streamlit.components.v1 as components
 
 # Add parent directory to path for imports
@@ -17,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from parsers import NextflowMonitor, OutputScanner
 from components.navigation import render_sidebar_navigation
+from components.theme import render_home_header
 
 
 def parse_args():
@@ -64,85 +66,8 @@ def main():
     monitor = NextflowMonitor(project_dir=project_dir)
     st.session_state.monitor = monitor
 
-    # ========== SIDEBAR STYLING ==========
-    st.sidebar.markdown("""
-    <style>
-    /* Sidebar global tweaks */
-    [data-testid="stSidebar"] {
-        padding-top: 1rem;
-    }
-
-    /* Brand container - compact and clean */
-    [data-testid="stSidebar"] .brand-container {
-        text-align: center;
-        padding: 0.75rem 0 1rem 0;
-        margin-bottom: 1.25rem;
-        border-bottom: 1px solid rgba(128, 128, 128, 0.15);
-    }
-    [data-testid="stSidebar"] .brand-container img {
-        margin-bottom: 0.5rem;
-    }
-    [data-testid="stSidebar"] .brand-title {
-        font-size: 1.15rem;
-        font-weight: 600;
-        margin: 0.5rem 0 0.15rem 0;
-        color: #1f2937;
-    }
-    [data-testid="stSidebar"] .brand-sub {
-        font-size: 0.8rem;
-        opacity: 0.65;
-        margin: 0;
-    }
-
-    /* Run selector spacing */
-    [data-testid="stSidebar"] .run-selector-spacer {
-        margin-bottom: 1.5rem;
-    }
-
-    /* Settings section - compact grouping */
-    [data-testid="stSidebar"] .settings-container {
-        margin-top: 1.5rem;
-        padding-top: 1rem;
-        border-top: 1px solid rgba(128, 128, 128, 0.15);
-    }
-
-    /* Footer - minimal */
-    [data-testid="stSidebar"] .footer-container {
-        margin-top: 2rem;
-        padding-top: 0.75rem;
-        border-top: 1px solid rgba(128, 128, 128, 0.1);
-        font-size: 0.7rem;
-        opacity: 0.5;
-        text-align: center;
-    }
-
-    /* Streamlit native selectbox styling - reduce spacing */
-    [data-testid="stSidebar"] [data-testid="stSelectbox"] {
-        margin-bottom: 0;
-    }
-
-    /* Streamlit native checkbox styling */
-    [data-testid="stSidebar"] [data-testid="stCheckbox"] {
-        margin-bottom: 0.5rem;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # Replace Streamlit's automatic page list with the shared five-page menu.
+    # Shared sidebar brand and legacy multipage navigation.
     render_sidebar_navigation()
-
-    # ========== BRAND SECTION ==========
-    logo_path = Path(__file__).parent / "public" / "mkp-logo-sm.png"
-    brand_html = '<div class="brand-container">'
-    if logo_path.exists():
-        import base64
-        with open(logo_path, "rb") as f:
-            logo_b64 = base64.b64encode(f.read()).decode()
-        brand_html += f'<img src="data:image/png;base64,{logo_b64}" width="100" />'
-    brand_html += '<div class="brand-title">ASVFlow Live</div>'
-    brand_html += '<div class="brand-sub">Interactive Results Explorer</div>'
-    brand_html += '</div>'
-    st.sidebar.markdown(brand_html, unsafe_allow_html=True)
 
     # ========== RUN SELECTOR ==========
     available_runs = monitor.list_runs()
@@ -181,9 +106,6 @@ def main():
     # Scan available outputs for dashboard rendering
     outputs = scanner.scan_available_outputs()
 
-    # Note: Streamlit automatically creates navigation from the /pages folder
-    # The native navigation appears above and provides full routing functionality
-
     # ========== SETTINGS SECTION ==========
     st.sidebar.markdown('<div class="settings-container"></div>', unsafe_allow_html=True)
 
@@ -208,7 +130,7 @@ def main():
 
     # ========== FOOTER ==========
     st.sidebar.markdown(f'''
-    <div class="footer-container">
+    <div class="asv-sidebar-footer">
         <div>ASVFlow v2.0.0</div>
         <div>{project_dir.name}</div>
     </div>
@@ -216,47 +138,37 @@ def main():
 
     # Main content area - Home/Overview
     # ========== HEADER SECTION ==========
-    st.markdown("# ASVFlow Live Dashboard")
-    st.caption("Interactive Pipeline Monitoring and Scientific Results Explorer")
-    st.markdown("")  # Spacing
+    render_home_header()
 
     # Run information banner - Compact cards
-    col1, col2, col3 = st.columns([3, 2, 2])
+    col1, col2, col3 = st.columns([1.4, 1, 1])
 
     with col1:
         st.markdown(f"""
-        <div style="background-color: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6;
-                    padding: 0.75rem 1rem; border-radius: 6px;">
-            <div style="font-size: 0.75rem; opacity: 0.7; margin-bottom: 0.25rem;">ACTIVE RUN</div>
-            <div style="font-size: 1rem; font-weight: 600;">{selected_run['run_name']}</div>
-        </div>
+        <div class="asv-overview-card"><div class="asv-overview-label">ACTIVE RUN</div>
+        <div class="asv-overview-value">{escape(str(selected_run['run_name']))}</div>
+        <div style="font: .72rem ui-monospace,monospace;color:#718697;margin-top:.25rem">{escape(str(selected_run.get('session_id', '')))}</div></div>
         """, unsafe_allow_html=True)
 
     with col2:
         status = selected_run['status']
         status_colors = {
-            'OK': ('#16a34a', '#dcfce7', 'Completed'),
-            'ERR': ('#dc2626', '#fee2e2', 'Failed'),
-            '-': ('#3b82f6', '#dbeafe', 'Running'),
-            'RUNNING': ('#3b82f6', '#dbeafe', 'Running')
+            'OK': ('#13866e', 'Completed'),
+            'ERR': ('#c43d4b', 'Failed'),
+            '-': ('#1688b8', 'Running'),
+            'RUNNING': ('#1688b8', 'Running')
         }
-        color, bg_color, label = status_colors.get(status, ('#6b7280', '#f3f4f6', 'Unknown'))
+        color, label = status_colors.get(status, ('#718096', 'Unknown'))
 
         st.markdown(f"""
-        <div style="background-color: {bg_color}; border-left: 3px solid {color};
-                    padding: 0.75rem 1rem; border-radius: 6px;">
-            <div style="font-size: 0.75rem; opacity: 0.7; margin-bottom: 0.25rem;">STATUS</div>
-            <div style="font-size: 1rem; font-weight: 600; color: {color};">{label}</div>
-        </div>
+        <div class="asv-overview-card" style="border-top-color:{color}"><div class="asv-overview-label">STATUS</div>
+        <div class="asv-overview-value" style="color:{color}">{label}</div></div>
         """, unsafe_allow_html=True)
 
     with col3:
         st.markdown(f"""
-        <div style="background-color: rgba(128, 128, 128, 0.05); border-left: 3px solid rgba(128, 128, 128, 0.3);
-                    padding: 0.75rem 1rem; border-radius: 6px;">
-            <div style="font-size: 0.75rem; opacity: 0.7; margin-bottom: 0.25rem;">STARTED</div>
-            <div style="font-size: 1rem; font-weight: 600;">{selected_run['timestamp']}</div>
-        </div>
+        <div class="asv-overview-card" style="border-top-color:#718da2"><div class="asv-overview-label">STARTED</div>
+        <div class="asv-overview-value">{escape(str(selected_run['timestamp']))}</div></div>
         """, unsafe_allow_html=True)
 
     st.markdown("")  # Spacing
@@ -264,35 +176,37 @@ def main():
 
     # ========== TASK EXECUTION SUMMARY ==========
     task_summary = scanner.get_task_status_summary()
-    st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin: 0.75rem 0 0.5rem; padding-bottom: 0.4rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Task Execution Summary</div>', unsafe_allow_html=True)
+    st.markdown('<div class="asv-section">Task Execution Summary</div>', unsafe_allow_html=True)
 
     if task_summary['total'] > 0:
         st.caption("Task statuses from this run's execution trace")
         metric_cols = st.columns(4)
         metrics = (
-            ('Executed', task_summary['executed'], '#16a34a'),
-            ('Cached', task_summary['cached'], '#7c3aed'),
-            ('Failed', task_summary['failed'], '#dc2626' if task_summary['failed'] > 0 else '#6b7280'),
-            ('Aborted', task_summary['aborted'], '#6b7280'),
+            ('✓', 'Executed', task_summary['executed'], '#13866e'),
+            ('↻', 'Cached', task_summary['cached'], '#7456b8'),
+            ('!', 'Failed', task_summary['failed'], '#c43d4b' if task_summary['failed'] > 0 else '#8292a0'),
+            ('○', 'Aborted', task_summary['aborted'], '#8292a0'),
         )
-        for col, (label, value, color) in zip(metric_cols, metrics):
+        for col, (icon, label, value, color) in zip(metric_cols, metrics):
             with col:
                 st.markdown(
-                    f'<div style="display:flex; align-items:center; gap:0.45rem; padding:0.35rem 0.6rem; '
-                    f'border:1px solid rgba(128,128,128,0.12); border-radius:6px; background:rgba(128,128,128,0.04);">'
-                    f'<span style="font-size:0.8rem; opacity:0.75">{label}</span>'
-                    f'<strong style="margin-left:auto; color:{color}; font-size:1rem">{value}</strong></div>',
+                    f'<div class="asv-metric-card" style="--metric-accent:{color}">'
+                    f'<div class="asv-metric-label">{icon} &nbsp;{label}</div>'
+                    f'<div class="asv-metric-value">{value}</div></div>',
                     unsafe_allow_html=True,
                 )
 
         completed_total = task_summary['executed'] + task_summary['cached']
         progress = completed_total / task_summary['total']
+        progress_color = {
+            'OK': '#13866e', 'ERR': '#c43d4b', '-': '#1688b8', 'RUNNING': '#1688b8'
+        }.get(selected_run['status'], '#8292a0')
         st.markdown(
-            f'<div style="display:flex; justify-content:space-between; margin:0.55rem 0 0.25rem; font-size:0.78rem; opacity:0.75">'
-            f'<span>Overall Progress</span><span>{completed_total} / {task_summary["total"]} tasks</span></div>'
-            f'<div role="progressbar" aria-valuenow="{progress * 100:.1f}" aria-valuemin="0" aria-valuemax="100" '
-            f'style="height:5px; border-radius:4px; background:rgba(128,128,128,0.16); overflow:hidden">'
-            f'<div style="height:100%; width:{min(progress * 100, 100):.1f}%; background:#16a34a; border-radius:4px"></div></div>',
+            f'<div style="display:flex;justify-content:space-between;margin:.8rem 0 .35rem;color:#64798c;font-size:.82rem">'
+            f'<span><strong style="color:#17324d">Overall Pipeline Progress</strong></span>'
+            f'<span>{completed_total} / {task_summary["total"]} tasks &nbsp;·&nbsp; {progress*100:.0f}%</span></div>'
+            f'<div class="asv-progress-track" role="progressbar" aria-valuenow="{progress * 100:.1f}" aria-valuemin="0" aria-valuemax="100">'
+            f'<div class="asv-progress-fill" style="width:{min(progress * 100, 100):.1f}%;background:{progress_color}"></div></div>',
             unsafe_allow_html=True,
         )
     else:
@@ -307,43 +221,18 @@ def main():
 
     with st.expander("View Run Command"):
         st.code(selected_run['command'], language='bash')
-    st.caption(f"Output Directory: `{outdir}`")
+    st.markdown(f'<div style="margin:.55rem 0 1rem;color:#64798c;font-size:.82rem">Output Directory</div><div style="font: .82rem ui-monospace,monospace;overflow-wrap:anywhere;background:#edf4f7;padding:.8rem 1rem;border-radius:8px;color:#29465d">{escape(str(outdir))}</div>', unsafe_allow_html=True)
 
     # ========== QUICK ACCESS SECTION ==========
-    st.markdown('<div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; margin-top: 2rem; padding-bottom: 0.5rem; border-bottom: 2px solid rgba(128, 128, 128, 0.1);">Quick Access</div>', unsafe_allow_html=True)
+    st.markdown('<div class="asv-section">Quick Access</div>', unsafe_allow_html=True)
 
     st.caption("Navigate to detailed analysis pages")
 
-    st.markdown("""
-    <style>
-    [class*="st-key-quick_access_"] button {
-        width: 100%;
-        min-height: 108px;
-        padding: 1rem;
-        border-radius: 8px;
-        text-align: center;
-        white-space: pre-line;
-        line-height: 1.65;
-        font-weight: 400;
-    }
-    [class*="st-key-quick_access_"][class*="_available"] button {
-        background-color: rgba(34, 197, 94, 0.1);
-        border: 1px solid rgba(34, 197, 94, 0.2);
-    }
-    [class*="st-key-quick_access_"][class*="_pending"] button,
-    [class*="st-key-quick_access_"][class*="_optional"] button {
-        background-color: rgba(128, 128, 128, 0.05);
-        border: 1px solid rgba(128, 128, 128, 0.1);
-        opacity: 0.65;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    def quick_access_card(key, title, status, available, page=None, artifact_path=None):
+    def quick_access_card(key, title, description, icon, status, available, page=None, artifact_path=None):
         state = 'available' if available else ('optional' if status == 'Optional' else 'pending')
-        icon = '✓' if available else '○'
+        indicator = '● Available' if available else ('◌ Optional' if status == 'Optional' else '◷ Pending')
         clicked = st.button(
-            f'{icon}  **{title}**  \n{status}',
+            f'{icon}  **{title}**  \n{description}  \n\n{indicator}',
             key=f'quick_access_{key}_{state}',
             use_container_width=True
         )
@@ -363,19 +252,19 @@ def main():
 
     with col1:
         quick_access_card(
-            'qc', 'QC Results', 'Available' if outputs['qc']['raw_multiqc'] else 'Pending',
+            'qc', 'QC Results', 'Read QC and quality metrics', '🔬', 'Available' if outputs['qc']['raw_multiqc'] else 'Pending',
             bool(outputs['qc']['raw_multiqc']), page='1_🔬_QC_Results.py'
         )
 
     with col2:
         quick_access_card(
-            'dada2', 'DADA2 Results', 'Available' if outputs['dada2']['seqtab'] else 'Pending',
+            'dada2', 'DADA2 Results', 'ASV inference, filtering and denoising', '🧬', 'Available' if outputs['dada2']['seqtab'] else 'Pending',
             bool(outputs['dada2']['seqtab']), page='2_🧬_DADA2_Results.py'
         )
 
     with col3:
         quick_access_card(
-            'taxonomy', 'Taxonomy', 'Available' if outputs['taxonomy']['taxonomy_table'] else 'Pending',
+            'taxonomy', 'Taxonomy', 'Taxonomic assignment and abundance', '🦠', 'Available' if outputs['taxonomy']['taxonomy_table'] else 'Pending',
             bool(outputs['taxonomy']['taxonomy_table']), page='3_🦠_Taxonomy.py'
         )
 
@@ -386,7 +275,7 @@ def main():
 
     with col4:
         quick_access_card(
-            'community', 'Community Analysis',
+            'community', 'Community Analysis', 'Diversity and community composition', '📊',
             'Available' if outputs['community']['alpha_diversity'] else 'Optional',
             bool(outputs['community']['alpha_diversity']), page='4_📊_Community_Analysis.py'
         )
@@ -399,13 +288,13 @@ def main():
         reports_status_text = f"Report: {report_status} · Timeline: {timeline_status}"
         report_path = outputs['reports']['execution_report'] or outputs['reports']['execution_timeline']
         quick_access_card(
-            'reports', 'Nextflow Reports', reports_status_text, reports_available,
+            'reports', 'Nextflow Reports', 'Execution report and timeline', '📈', reports_status_text, reports_available,
             artifact_path=report_path
         )
 
     with col6:
         quick_access_card(
-            'sample_explorer', 'Sample Explorer',
+            'sample_explorer', 'Sample Explorer', 'Explore samples, ASVs and taxonomy', '🔎',
             'Available' if outputs['dada2']['seqtab'] else 'Pending',
             bool(outputs['dada2']['seqtab']), page='5_🔍_Sample_Explorer.py'
         )
@@ -440,22 +329,23 @@ def main():
         available_cols = [col for col in display_cols if col in trace_df.columns]
 
         if available_cols:
-            # Add custom CSS for table
-            st.markdown("""
-            <style>
-            div[data-testid="stDataFrame"] {
-                border: 1px solid rgba(128, 128, 128, 0.1);
-                border-radius: 8px;
-                overflow: hidden;
-            }
-            div[data-testid="stDataFrame"] > div {
-                border-radius: 8px;
-            }
-            </style>
-            """, unsafe_allow_html=True)
+            table = trace_df[available_cols]
+            def style_task_row(row):
+                shade = '#ffffff' if row.name % 2 == 0 else '#f3f8fb'
+                styles = [f'background-color: {shade}' for _ in row]
+                if 'status' in row.index:
+                    status_style = {
+                        'COMPLETED': 'color:#13795b;font-weight:700',
+                        'CACHED': 'color:#7251a8;font-weight:700',
+                        'FAILED': 'color:#bf3345;font-weight:700',
+                        'ABORTED': 'color:#697b89;font-weight:700',
+                        'RUNNING': 'color:#147fb0;font-weight:700',
+                    }.get(str(row['status']).upper(), 'color:#63798a')
+                    styles[table.columns.get_loc('status')] += ';' + status_style
+                return styles
 
             st.dataframe(
-                trace_df[available_cols],
+                table.style.apply(style_task_row, axis=1),
                 use_container_width=True,
                 height=400
             )
