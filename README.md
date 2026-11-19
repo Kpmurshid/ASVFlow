@@ -1,220 +1,71 @@
 # ASVFlow
 
-A Nextflow pipeline for amplicon sequencing analysis using DADA2, from raw paired-end reads to amplicon sequence variants (ASVs), taxonomy assignment, and community analysis.
+ASVFlow is a DSL2 Nextflow workflow for paired-end amplicon sequencing. It runs read quality control, optional Cutadapt primer removal, DADA2 ASV inference, and optional SILVA taxonomy and community analyses. The workflow and synthetic fixtures are oriented to bacterial 16S rRNA amplicons. ITS support is not established by the current implementation.
 
-## Features
+## Workflow and options
 
-- **Quality Control**: FastQC and MultiQC reporting for raw and trimmed reads
-- **Primer Trimming**: Cutadapt-based adapter and primer removal
-- **DADA2 ASV Inference**: Complete DADA2 workflow with error modeling, denoising, merging, and chimera removal
-- **Taxonomy Assignment**: SILVA-based taxonomic classification using DADA2's naive Bayesian classifier
-- **Community Analysis**: Alpha diversity, beta diversity, taxonomic composition, and PERMANOVA (optional)
-- **ASVFlow Live Dashboard**: Streamlit-based web interface for run monitoring and interactive result visualization
-- **Containerized**: All dependencies packaged in Singularity/Apptainer containers
-- **Reproducible**: Fully parameterized workflow with version-controlled container definitions
+FastQC and MultiQC run on raw reads and again after the primer-trimming stage. Primer removal defaults to paired Cutadapt primers; set `--primer_mode none` to skip it. DADA2 runs by default and performs quality profiling, filtering, error learning, dereplication, inference, paired-read merging, sequence-table construction, and chimera removal.
 
-## Pipeline Overview
+Taxonomy is off by default. `--run_taxonomy true` assigns taxonomy with DADA2's classifier and a SILVA reference. Species-level addition is a separate opt-in (`--taxonomy_add_species true`) and requires its SILVA species reference. SILVA versions `144` and `138.1` have automatic filenames; other versions require explicit reference paths.
 
-```
-Raw FASTQ reads (paired-end)
-    ↓
-Quality Control (FastQC/MultiQC)
-    ↓
-Primer Trimming (Cutadapt) [optional]
-    ↓
-Quality Filtering (DADA2 filterAndTrim)
-    ↓
-Error Model Learning (DADA2 learnErrors)
-    ↓
-Dereplication (DADA2 derepFastq)
-    ↓
-ASV Inference (DADA2 dada)
-    ↓
-Merge Paired Reads (DADA2 mergePairs)
-    ↓
-Sequence Table Construction (DADA2 makeSequenceTable)
-    ↓
-Chimera Removal (DADA2 removeBimeraDenovo)
-    ↓
-Taxonomy Assignment (DADA2 assignTaxonomy) [optional]
-    ↓
-Species Addition (DADA2 addSpecies) [optional]
-    ↓
-Community Analysis (phyloseq/vegan) [optional]
-    ↓
-ASVFlow Live Dashboard [optional]
-```
+Community analysis is off by default and requires DADA2. When enabled, alpha diversity, beta diversity (Bray-Curtis and Jaccard), and sequencing-depth outputs are generated. Taxonomic composition is generated only when an internal or external taxonomy table is available. PERMANOVA is generated only when sample metadata is supplied. An external taxonomy table can be supplied using `--taxonomy_table`.
 
-## System Requirements
+| Stage | Control | Default |
+|---|---|---|
+| Primer removal | `--primer_mode paired\|none`, `--primer_fwd`, `--primer_rev` | Paired; primer sequences required |
+| DADA2 | `--run_dada2` | `true` |
+| Taxonomy | `--run_taxonomy`, `--taxonomy_add_species` | `false`, `false` |
+| Community analysis | `--run_community_analysis` | `false` |
+| Dashboard | `--enable_dashboard` | `false` |
 
-### Prerequisites
+## Requirements and setup
 
-- **Java** ≥ 11
-- **Nextflow** ≥ 21.04.0
-- **Singularity** ≥ 3.7 or **Apptainer** ≥ 1.0
-- **curl** (for downloading reference databases)
-- **Bash** ≥ 4.0
+- Java 11 or newer and Nextflow. The repository does not enforce a minimum Nextflow version in its configuration; use a current DSL2-capable Nextflow release.
+- Apptainer or Singularity is required by the configured container execution and by the setup and dashboard scripts. Container paths default to `tools/`.
+- `curl` is needed by `bin/download_tools.sh`. Downloading containers and the reference files requires network access; after setup, pipeline analysis uses local containers and references.
+- Dashboard launch requires Linux, Bash, Python 3.9 or newer, `setsid`, GNU `stat`, and `curl`; Linux pidfd support (kernel 5.1+) is used for process ownership checks. `ss` or `lsof` is recommended for port checks. Dashboard Python dependencies are packaged in the dashboard container, not installed on the host.
 
-### Computational Resources
-
-Minimum recommended:
-- 8 CPU cores
-- 16 GB RAM
-- 50 GB disk space (for containers and databases)
-
-For large datasets (>100 samples):
-- 16+ CPU cores
-- 32+ GB RAM
-
-## Installation
-
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/Kpmurshid/ASVFlow.git
-cd ASVFlow
-```
-
-### 2. Install Nextflow
-
-ASVFlow supports **Nextflow 21.04.0 or newer**. Install Java 11 or newer, then install Nextflow:
-
-```bash
-curl -s https://get.nextflow.io | bash
-sudo install nextflow /usr/local/bin/nextflow
-nextflow -version
-```
-
-If you install Nextflow elsewhere, ensure its location is on `PATH` before running ASVFlow.
-
-### 3. Download Container Images and Reference Databases
-
-Run the setup script to download all required Apptainer/Singularity container images and SILVA reference files:
+Install Nextflow using its official installation instructions, then from the repository root run:
 
 ```bash
 ./bin/download_tools.sh
 ```
 
-This script will:
-- Pull 10 Apptainer/Singularity container images from public registries (Biocontainers, Docker Hub)
-- Download SILVA v144 reference databases from arb-silva.de
-- Verify MD5 checksums and gzip integrity for downloaded SILVA database files
-- Skip already-downloaded files
+The script pulls ten images into `tools/`: DADA2 (`bioconductor-dada2:1.38.0`), Cutadapt (`cutadapt:5.2`), FastQC (`fastqc:0.13.0`), MultiQC (`multiqc:v1.35`), ASVFlow stats, dashboard and report images, and SeqKit, MAFFT and FastTree. Stats and dashboard images are the published ASVFlow images named in `bin/download_tools.sh`; the report and extra sequence-tool images are downloaded but are not called by the current workflow. The setup script downloads SILVA v144 DADA2-formatted genus, species-training, and species-assignment files under `databases/silva/144/`. Taxonomy can instead use SILVA v138.1 references obtained separately or user-supplied references. Reference files are not committed to the repository.
 
-**Container sources:**
-- `asvflow-dada2.sif` → `docker://quay.io/biocontainers/bioconductor-dada2:1.38.0--r45ha27e39d_0`
-- `asvflow-trim.sif` → `docker://quay.io/biocontainers/cutadapt:5.2--py312hfabe715_2`
-- `asvflow-qc.sif` → `docker://quay.io/biocontainers/fastqc:0.13.0--hdfd78af_0`
-- `asvflow-multiqc.sif` → `docker://multiqc/multiqc:v1.35`
-- `asvflow-stats.sif` → `oras://registry-1.docker.io/kpmurshid/asvflow-stats:bioc-3.22-r4.5.2`
-- `asvflow-report.sif` → `oras://registry-1.docker.io/kpmurshid/asvflow-report:python-3.12`
-- `asvflow-dashboard.sif` → `oras://registry-1.docker.io/kpmurshid/asvflow-dashboard:streamlit-1.35.0-numpy-1.26.4-pyarrow-16.1.0`
-- Additional tools: seqkit, mafft, fasttree from Biocontainers
+The dashboard image contains Python 3.12 with Streamlit 1.35.0, NumPy 1.26.4, pandas 2.2.2, PyArrow 16.1.0, Plotly 5.22.0, and watchdog 4.0.1. Community analysis runs in the stats image, which supplies R, phyloseq and vegan.
 
-**Database downloads:**
-- SILVA v144 training sets (genus and species-level)
-- SILVA v144 species assignment database
+## Inputs
 
-**Total download size:** ~3.7 GB (containers: ~3.2 GB, databases: ~526 MB)
-
-### 4. Verify Installation
-
-```bash
-./bin/validate_environment.sh
-```
-
-This checks that expected container images are present and their tools can run. It also checks available FASTQ files under `data/`; reference databases are required when taxonomy is enabled.
-
-## Offline Usage
-
-Once containers and databases are downloaded, the pipeline can run offline. All dependencies are self-contained in the Apptainer/Singularity images, and reference databases are stored locally in `databases/silva/144/`.
-
-## Input Data
-
-### Samplesheet Format
-
-Create a CSV file with the following columns:
+The required sample sheet is CSV with exactly these header fields. Paths are resolved from the Nextflow launch directory. Both FASTQ inputs must exist; the included validator additionally checks gzip integrity and duplicate sample identifiers.
 
 ```csv
 sample_id,fastq_1,fastq_2
-Sample1,/path/to/Sample1_R1.fastq.gz,/path/to/Sample1_R2.fastq.gz
-Sample2,/path/to/Sample2_R1.fastq.gz,/path/to/Sample2_R2.fastq.gz
-Sample3,/path/to/Sample3_R1.fastq.gz,/path/to/Sample3_R2.fastq.gz
+SAMPLE01,data/SAMPLE01_R1.fastq.gz,data/SAMPLE01_R2.fastq.gz
+SAMPLE02,data/SAMPLE02_R1.fastq.gz,data/SAMPLE02_R2.fastq.gz
 ```
 
-**Requirements:**
-- Header line required: `sample_id,fastq_1,fastq_2`
-- `sample_id`: Unique sample identifier (no spaces or special characters except underscore/hyphen)
-- `fastq_1`: Absolute or relative path to forward read file
-- `fastq_2`: Absolute or relative path to reverse read file
-- Files must be gzipped FASTQ format (`.fastq.gz` or `.fq.gz`)
-
-### Validate Samplesheet
+The validator accepts this CSV structure and validates gzip streams; it does not enforce a filename suffix. Reads are paired-end. To validate a sheet:
 
 ```bash
-./bin/validate_samplesheet.py samplesheet.csv
+python3 bin/validate_samplesheet.py samplesheet.csv
 ```
 
-## Pipeline Configuration
+With default `--primer_mode paired`, provide both primer sequences in 5′ to 3′ orientation. Primer trimming can be skipped with `--primer_mode none`.
 
-### Essential Parameters
+Optional sample metadata for community analysis may be comma- or tab-delimited. It must have a `sample_id` or `sampleid` column and a row for every sample; remaining columns are sample variables. For example, the repository fixture is TSV:
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--sample_sheet` | *required* | Path to samplesheet CSV |
-| `--outdir` | `results` | Output directory |
-| `--primer_fwd` | *required if primer_mode='paired'* | Forward primer sequence (5'→3') |
-| `--primer_rev` | *required if primer_mode='paired'* | Reverse primer sequence (5'→3') |
+```tsv
+sample_id	group	treatment	replicate
+SAMPLE01	Control	Control	1
+SAMPLE03	Treatment_A	Treatment_A	1
+```
 
-### Quality Filtering (DADA2)
+PERMANOVA is attempted when metadata is provided and uses available grouping variables; alpha and beta diversity do not require metadata.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--dada2_trunc_len_f` | `0` | Truncate R1 reads to this length (0 = no truncation) |
-| `--dada2_trunc_len_r` | `0` | Truncate R2 reads to this length (0 = no truncation) |
-| `--dada2_max_ee_f` | `2.0` | Maximum expected errors for R1 |
-| `--dada2_max_ee_r` | `2.0` | Maximum expected errors for R2 |
-| `--dada2_trunc_q` | `2` | Truncate reads at first base with quality ≤ Q |
-| `--dada2_min_len` | `50` | Minimum read length after filtering |
-| `--dada2_rm_phix` | `true` | Remove PhiX spike-in sequences |
+## Running ASVFlow
 
-### ASV Inference (DADA2)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--dada2_pool` | `false` | Pooling mode: `false`, `true`, or `'pseudo'` |
-| `--dada2_min_overlap` | `12` | Minimum overlap for merging paired reads |
-| `--dada2_max_mismatch` | `0` | Maximum mismatches in overlap region |
-| `--dada2_chimera_method` | `'consensus'` | Chimera detection: `'consensus'`, `'pooled'`, `'per-sample'` |
-
-### Taxonomy Assignment
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--run_taxonomy` | `false` | Enable taxonomy assignment |
-| `--taxonomy_add_species` | `false` | Add species-level classification |
-| `--taxonomy_min_boot` | `50` | Minimum bootstrap confidence (0-100) |
-| `--silva_version` | `144` | SILVA database version |
-
-### Community Analysis
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--run_community_analysis` | `false` | Enable community analysis |
-| `--sample_metadata` | `null` | Path to sample metadata CSV (optional) |
-| `--composition_top_n` | `10` | Number of top taxa to display |
-| `--permanova_nperm` | `999` | Number of PERMANOVA permutations |
-
-### Dashboard
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--enable_dashboard` | `false` | Launch ASVFlow Live dashboard during pipeline execution |
-| `--dashboard_port` | `8501` | Dashboard port (auto-increments if in use) |
-
-## Running the Pipeline
-
-### Basic Run (QC + DADA2 only)
+Minimal run (QC, primer removal and DADA2; no taxonomy/community analysis):
 
 ```bash
 nextflow run main.nf \
@@ -224,7 +75,7 @@ nextflow run main.nf \
   --outdir results/my_run
 ```
 
-### Run with Taxonomy Assignment
+Taxonomy, species addition and community analysis:
 
 ```bash
 nextflow run main.nf \
@@ -233,284 +84,122 @@ nextflow run main.nf \
   --primer_rev GGACTACHVGGGTWTCTAAT \
   --run_taxonomy true \
   --taxonomy_add_species true \
-  --outdir results/my_run
-```
-
-### Run with Community Analysis
-
-```bash
-nextflow run main.nf \
-  --sample_sheet samplesheet.csv \
-  --primer_fwd GTGCCAGCMGCCGCGGTAA \
-  --primer_rev GGACTACHVGGGTWTCTAAT \
-  --run_taxonomy true \
   --run_community_analysis true \
-  --sample_metadata metadata.csv \
+  --sample_metadata metadata.tsv \
   --outdir results/my_run
 ```
 
-**Sample metadata format:**
-```csv
-sample_id,group,timepoint,replicate
-Sample1,Control,T0,1
-Sample2,Treatment,T0,1
-Sample3,Control,T1,1
-```
-
-### Run with Live Dashboard
+Species addition and taxonomy both require the relevant reference files. For community alpha/beta/depth without taxonomy, omit the taxonomy options; composition is then unavailable. PERMANOVA runs only if `--sample_metadata` is supplied. Resume a Nextflow run with `-resume`:
 
 ```bash
-nextflow run main.nf \
-  --sample_sheet samplesheet.csv \
-  --primer_fwd GTGCCAGCMGCCGCGGTAA \
-  --primer_rev GGACTACHVGGGTWTCTAAT \
-  --run_taxonomy true \
-  --enable_dashboard true \
-  --outdir results/my_run
+nextflow run main.nf -resume --sample_sheet samplesheet.csv --primer_mode none --outdir results/my_run
 ```
 
-The dashboard will launch automatically and display the URL in the terminal.
+### Parameters
 
-### Resume Failed Runs
+| Parameter | Default | Purpose |
+|---|---|---|
+| `--sample_sheet` | Required | Paired-read CSV |
+| `--outdir` | `results` | Published results directory |
+| `--primer_mode` | `paired` | `paired` or `none` |
+| `--primer_fwd`, `--primer_rev` | unset | Required in paired mode |
+| `--trim_error_rate`, `--trim_min_overlap`, `--trim_min_length`, `--discard_untrimmed` | `0.1`, `3`, `50`, `true` | Cutadapt controls |
+| `--run_dada2` | `true` | Enable DADA2 inference |
+| `--dada2_trunc_len_f`, `--dada2_trunc_len_r` | `0`, `0` | Fixed truncation lengths; zero disables fixed-length truncation |
+| `--dada2_max_ee_f`, `--dada2_max_ee_r` | `2.0`, `2.0` | Maximum expected errors |
+| `--dada2_trunc_q`, `--dada2_max_n`, `--dada2_min_len`, `--dada2_rm_phix` | `2`, `0`, `50`, `true` | DADA2 filter settings |
+| `--dada2_learn_nbases`, `--dada2_pool` | `1000000`, `false` | Error learning and pooling (`false`, `true`, or `pseudo`) |
+| `--dada2_min_overlap`, `--dada2_max_mismatch` | `12`, `0` | Paired-read merge settings |
+| `--dada2_chimera_method` | `consensus` | Chimera method (`consensus`, `pooled`, `per-sample`) |
+| `--run_taxonomy`, `--taxonomy_add_species` | `false`, `false` | Taxonomy and optional species addition |
+| `--silva_version`, `--silva_genus_ref`, `--silva_species_ref` | `144`, unset, unset | Reference version and optional explicit paths |
+| `--taxonomy_min_boot`, `--taxonomy_tryrc` | `50`, `true` | DADA2 classifier settings |
+| `--run_community_analysis` | `false` | Enable community analyses |
+| `--sample_metadata`, `--taxonomy_table` | unset, unset | Optional metadata and external taxonomy TSV |
+| `--composition_top_n`, `--permanova_nperm`, `--permanova_seed` | `10`, `999`, `123` | Composition and PERMANOVA settings |
+| `--enable_dashboard`, `--dashboard_port`, `--dashboard_bind_address` | `false`, `8501`, unset | Launch dashboard; bind address defaults to Tailscale IPv4 if available, otherwise loopback |
+
+The Nextflow configuration enables Singularity-compatible container execution with auto mounts and sets per-process CPU, memory, retry and time limits. Trace, report and timeline artifacts are enabled under `<outdir>/.asvflow_dashboard/artifacts/<invocation-id>/`.
+
+## ASVFlow Live dashboard
+
+The Streamlit dashboard selects from runs recorded by ASVFlow and follows newly written outputs for the selected run. It supports multiple recorded runs, with one run selected at a time. Pages are Home/overview, QC Results, DADA2 Results, Taxonomy, Community Analysis, and Sample Explorer. Available views include task summaries and traces, FastQC/MultiQC results, read tracking, chimera metrics, ASV tables, taxonomy tables, diversity, composition, sequencing depth, and PERMANOVA results when those outputs exist. It is an output viewer and does not change parameters or launch analysis.
+
+Launch it with the pipeline:
 
 ```bash
-nextflow run main.nf -resume --sample_sheet samplesheet.csv [other options]
+nextflow run main.nf --sample_sheet samplesheet.csv --primer_mode none \
+  --enable_dashboard true --dashboard_port 8501 --outdir results/my_run
 ```
 
-## ASVFlow Live Dashboard
+Or start it after a run:
 
-The ASVFlow Live dashboard provides run monitoring and interactive visualization of completed pipeline outputs.
-
-### Dashboard Host Requirements
-
-- Linux with `/proc` mounted and a kernel that supports pidfds (Linux 5.1 or newer)
-- Bash 4 or newer, Python 3.9 or newer, `setsid`, GNU `stat`, and `curl`
-- Apptainer 1.0 or newer or Singularity 3.7 or newer; the launcher uses Apptainer when both runtimes are installed
-- `ss` or `lsof` is recommended for reliable port-conflict detection
-
-Dashboard process ownership checks use Python's `os.pidfd_open` and `signal.pidfd_send_signal` APIs. Dashboard launch and stop rely on Linux process metadata and are not supported on non-Linux systems.
-
-When `tailscale` is available, the launcher binds to its IPv4 address; otherwise it binds to `127.0.0.1`. Set `DASHBOARD_BIND_ADDRESS=127.0.0.1` to force loopback, or use `--dashboard_bind_address` when starting through Nextflow.
-
-### Features
-
-- **Run Overview**: Pipeline execution status and task summary
-- **QC Results**: Interactive FastQC and MultiQC reports
-- **DADA2 Results**: ASV table statistics, read tracking, chimera removal metrics
-- **Taxonomy**: Taxonomic classification statistics and interactive tables
-- **Community Analysis**: Alpha/beta diversity plots, taxonomic composition, PERMANOVA results
-- **Sample Explorer**: Per-sample quality profiles and detailed metrics
-
-### Launching the Dashboard
-
-**During pipeline execution:**
 ```bash
-nextflow run main.nf --enable_dashboard true --sample_sheet samplesheet.csv [...]
+bin/launch_dashboard.sh results/my_run 8501
 ```
 
-**After pipeline completion:**
+The launcher uses `tools/asvflow-dashboard.sif` by default. Its optional third argument overrides the image path. If Tailscale is available, the launcher binds its IPv4 address; otherwise it binds loopback. Set `DASHBOARD_BIND_ADDRESS` or use `--dashboard_bind_address` to choose an address. A port conflict is reported; the launcher does not automatically increment the requested port. Stop an instance with:
+
 ```bash
-./bin/launch_dashboard.sh results/my_run 8501
+bin/stop_dashboard.sh results/my_run
 ```
 
-The dashboard URL will be displayed in the terminal (typically `http://localhost:8501`).
+Dashboard ownership and runtime state are tracked under `${XDG_STATE_HOME:-~/.local/state}/asvflow/dashboard` (or `ASVFLOW_STATE_DIR` when set), with compatibility state in the selected output directory. The Nextflow startup panel reports the selected analysis configuration and dashboard status. The completion panel reports final workflow status and output location. The ANSI ASVFlow terminal branding currently displays `v1.0.0`; that display string is not evidence of a separately managed software release version.
 
-### Dashboard Management
+## Outputs
 
+Directories below are published under the selected `--outdir`; individual files depend on enabled stages and whether a plot can be produced.
 
-**Stop the dashboard:**
-```bash
-./bin/stop_dashboard.sh results/my_run
-```
-
-**Multiple concurrent dashboards:**
-Each output directory can have its own dashboard instance. Ports auto-increment if conflicts occur (8501 → 8502 → 8503...).
-
-### Dashboard Limitations
-
-- The dashboard provides **run monitoring** and displays completed task outputs, not live task-level execution tracking
-- Task status reflects tasks that have completed, failed, or been cached
-- Community analysis visualizations require `--run_community_analysis true` during pipeline execution
-- PDF reports must be downloaded; inline viewing is not supported
-
-## Output Directory Structure
-
-```
-results/
-├── qc/
-│   ├── raw/                      # FastQC reports for raw reads
-│   └── trimmed/                  # FastQC reports for trimmed reads
-├── trimmed/                      # Trimmed FASTQ files
-├── trimming_reports/             # Cutadapt trimming logs
+```text
+<outdir>/
+├── qc/raw/                         # FastQC reports and MultiQC report/data
+├── qc/trimmed/                     # Post-primer-stage FastQC and MultiQC
+├── trimmed/                        # Cutadapt reads (when primer mode is paired)
+├── trimming_reports/               # Cutadapt JSON and text reports
 ├── dada2/
-│   ├── qc/
-│   │   └── quality_profiles.pdf  # Quality score profiles
-│   ├── filtered/                 # Quality-filtered reads
-│   ├── dereplicated/             # Dereplicated sequences
-│   ├── error_models/             # Error rate plots
-│   ├── inferred/                 # Denoised ASVs per sample
-│   ├── merged/                   # Merged paired reads
-│   ├── seqtab/                   # Sample-specific sequence tables
-│   └── final/
-│       ├── seqtab_nochim.tsv     # Final ASV table (samples × ASVs)
-│       ├── seqtab_nochim.fasta   # ASV representative sequences
-│       ├── track_reads.tsv       # Read counts through pipeline
-│       └── chimera_stats.tsv     # Chimera removal statistics
-├── taxonomy/
-│   ├── taxonomy.tsv              # Taxonomic assignments (ASV_ID → Kingdom...Genus/Species)
-│   └── taxonomy_stats.tsv        # Classification statistics
-└── community/
-    ├── alpha_diversity.tsv       # Shannon, Simpson, Chao1 per sample
-    ├── alpha_diversity.pdf       # Alpha diversity boxplots
-    ├── beta_diversity_pcoa.pdf   # PCoA ordination plots
-    ├── composition_*.pdf         # Taxonomic composition bar charts
-    ├── sequencing_depth.pdf      # Rarefaction curves
-    └── permanova_results.txt     # PERMANOVA test results
+│   ├── qc/                          # R1/R2 quality profiles
+│   ├── filtered/                    # Filtered reads
+│   ├── error_models/                # Error models and plots
+│   ├── dereplicated/                # Per-sample dereplication objects
+│   ├── inferred/                    # Per-sample inferred objects
+│   ├── merged/                      # Merged objects and merge statistics
+│   ├── seqtab/                      # Combined sequence table
+│   └── final/                       # Non-chimeric table, FASTA, read tracking, chimera stats
+├── taxonomy/                        # Taxonomy table/statistics; species outputs if enabled
+├── community/                       # Prepared inputs, diversity, composition, depth, PERMANOVA
+└── .asvflow_dashboard/
+    ├── artifacts/<invocation-id>/   # Nextflow trace, report and timeline
+    └── runs/                        # Run metadata used by dashboard selection
 ```
 
-## Testing and Validation
+Community outputs include `alpha_diversity.tsv` and PDF, Bray-Curtis/Jaccard PCoA TSV/PDF and statistics, `sequencing_depth.tsv` and related statistics/rarefaction files, composition tables/plots when taxonomy is available, and PERMANOVA results when metadata is provided. The dashboard state location may be in the user's state directory as described above.
 
-From the repository root, generate the synthetic FASTQ files and sample sheets, then run the retained validation tests:
+## Tests and synthetic data
+
+The synthetic generator writes deterministic paired-end 16S-like FASTQ data, refreshes both sample sheets, and creates the community metadata fixture. Generate the fixtures from the repository root:
 
 ```bash
 python3 test/generate_synthetic_data.py
+```
+
+Run the retained validation and dashboard tests:
+
+```bash
 ./test/test_validation.sh
 ./test/dashboard/run_all_tests.sh
 ```
 
-`test/test_validation.sh` also runs the synthetic data generator, so it can be run directly after cloning. The generator recreates the ignored FASTQ files referenced by the two retained sample sheets. The dashboard runner executes lifecycle, process identity, and incremental output availability tests; it requires Python 3, a C compiler, Apptainer or Singularity, and `tools/asvflow-dashboard.sif`.
+The validation script also regenerates synthetic data. Dashboard tests require Python 3, a C compiler, Apptainer or Singularity, and `tools/asvflow-dashboard.sif`. These scripts validate input handling and dashboard lifecycle/output behavior; they do not run or validate the complete Nextflow workflow.
 
-### Validation Status
+## Scope
 
-The pipeline has been validated using:
-- ✅ Stub execution across all modules
-- ✅ Synthetic test datasets
-- ✅ Edge case fixtures for error handling
-- ⚠️ Full end-to-end validation with real sequencing data pending
+- The workflow accepts paired-end reads and provides a 16S-oriented DADA2 analysis. ITS support is not verified and should not be assumed.
+- Taxonomy uses DADA2-compatible SILVA references; other taxonomy databases are not configured by the workflow.
+- Phylogenetic diversity metrics such as UniFrac are not generated by the current community modules.
+- Taxonomy, species addition, community analysis, and the dashboard are optional stages/features as described above.
 
-## Troubleshooting
+## References
 
-### Container Issues
-
-**Problem:** Apptainer/Singularity not found
-```bash
-# Install Apptainer (newer alternative to Singularity)
-# On Ubuntu/Debian:
-sudo apt install apptainer
-
-# Or install Singularity from source:
-# https://github.com/sylabs/singularity
-```
-
-**Problem:** Container pull fails
-```bash
-# Re-run download script (resumes partial downloads)
-./bin/download_tools.sh
-
-# Check network connectivity and registry availability
-apptainer pull fastqc.sif docker://quay.io/biocontainers/fastqc:0.13.0--hdfd78af_0
-```
-
-### Pipeline Errors
-
-**Problem:** `Empty sample_id in samplesheet`
-- Check samplesheet formatting (CSV with header line)
-- Ensure no blank lines or empty sample_id values
-
-**Problem:** `primer_mode='paired' requires --primer_fwd and --primer_rev`
-- Provide both primer sequences or set `--primer_mode none`
-
-**Problem:** Memory errors during DADA2 error learning
-- Reduce `--dada2_learn_nbases` (default: 1,000,000)
-- Increase memory allocation in `nextflow.config`
-
-**Problem:** Low ASV recovery
-- Adjust quality filtering thresholds (`--dada2_max_ee_f`, `--dada2_max_ee_r`)
-- Check quality profiles: `results/dada2/qc/quality_profiles.pdf`
-- Consider using pseudo-pooling: `--dada2_pool pseudo`
-
-### Dashboard Issues
-
-**Problem:** Dashboard won't start
-```bash
-# Check if port is in use
-netstat -tuln | grep 8501
-
-# Use a different port
-./bin/launch_dashboard.sh results/my_run 8502
-
-# Check dashboard logs
-cat results/my_run/.asvflow_dashboard/dashboard.log
-```
-
-**Problem:** "Community analysis not available"
-- Rerun pipeline with `--run_community_analysis true`
-- Ensure taxonomy was enabled (`--run_taxonomy true`)
-
-**Problem:** Multiple dashboard instances conflict
-- Each output directory has independent dashboard state
-- Use `./bin/stop_dashboard.sh <output_dir>` to stop specific instances
-
-## Known Limitations
-
-### Pipeline
-
-- **Paired-end only**: Single-end reads are not supported
-- **Illumina-specific**: Optimized for Illumina sequencing data
-- **SILVA-only**: Other taxonomy databases (Greengenes, UNITE) not supported without modification
-- **No ITS support**: Pipeline designed for 16S/18S rRNA gene amplicons; ITS region requires different merging strategy
-
-### Community Analysis
-
-- **Optional module**: Must be explicitly enabled with `--run_community_analysis true`
-- **Requires taxonomy**: Community analysis depends on taxonomic classifications
-- **No phylogenetic diversity**: Tree-based metrics (UniFrac) not implemented
-- **PERMANOVA**: Requires sample metadata with categorical grouping variable
-
-### Dashboard
-
-- **Post-execution visualization**: Dashboard displays completed pipeline outputs, not live task-level monitoring
-- **No edit capabilities**: Read-only interface; cannot modify parameters or rerun analyses
-- **Container-based**: Requires Singularity/Apptainer runtime
-
-### Validation
-
-- **Limited real data testing**: Primary validation used synthetic and stub datasets
-- **No benchmark datasets**: Performance not validated against established mock communities
-
-## Citation
-
-If you use ASVFlow in your research, please cite:
-
-**DADA2:**
-Callahan BJ, McMurdie PJ, Rosen MJ, et al. (2016) DADA2: High-resolution sample inference from Illumina amplicon data. *Nature Methods* 13:581–583. doi:10.1038/nmeth.3869
-
-**SILVA:**
-Quast C, Pruesse E, Yilmaz P, et al. (2013) The SILVA ribosomal RNA gene database project: improved data processing and web-based tools. *Nucleic Acids Research* 41:D590–D596. doi:10.1093/nar/gks1219
-
-**Nextflow:**
-Di Tommaso P, Chatzou M, Floden EW, et al. (2017) Nextflow enables reproducible computational workflows. *Nature Biotechnology* 35:316–319. doi:10.1038/nbt.3820
-
-## License
-
-This project does not currently specify a license. Container images and reference databases are subject to their respective licenses:
-- DADA2: LGPL-2.1
-- SILVA: Academic use only (commercial use requires license)
-- Cutadapt: MIT
-- FastQC: GPL v3
-- MultiQC: GPL v3
-
-## Contact and Support
-
-For issues, questions, or contributions, please open an issue on the GitHub repository.
-
-## Acknowledgments
-
-ASVFlow integrates best-practice bioinformatics tools:
-- DADA2 (Callahan et al.)
-- Cutadapt (Martin, 2011)
-- FastQC (Andrews, 2010)
-- MultiQC (Ewels et al., 2016)
-- phyloseq (McMurdie & Holmes, 2013)
-- vegan (Oksanen et al.)
-- Streamlit (Streamlit Inc.)
+- Callahan BJ, McMurdie PJ, Rosen MJ, et al. (2016). DADA2: High-resolution sample inference from Illumina amplicon data. *Nature Methods* 13:581–583. doi:10.1038/nmeth.3869.
+- Quast C, Pruesse E, Yilmaz P, et al. (2013). The SILVA ribosomal RNA gene database project. *Nucleic Acids Research* 41:D590–D596. doi:10.1093/nar/gks1219.
+- Di Tommaso P, Chatzou M, Floden EW, et al. (2017). Nextflow enables reproducible computational workflows. *Nature Biotechnology* 35:316–319. doi:10.1038/nbt.3820.
