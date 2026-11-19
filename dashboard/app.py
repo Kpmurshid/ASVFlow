@@ -263,10 +263,14 @@ def main():
     seqtab_status = scanner.get_artifact_status('dada2', 'seqtab')
     taxonomy_status = scanner.get_artifact_status('taxonomy', 'taxonomy_table')
     community_status = scanner.get_artifact_status('community', 'alpha_diversity')
+    phylogeny_status = scanner.get_artifact_status('phylogeny', 'tree')
     command = selected_run.get('command', '').lower()
     community_requested = '--run_community_analysis true' in command or '--run_community_analysis=true' in command
     if community_status != 'Available' and not community_requested and selected_run.get('status') in ('OK', 'COMPLETED'):
         community_status = 'Optional'
+    phylogeny_requested = '--run_phylogenetic_analysis true' in command or '--run_phylogenetic_analysis=true' in command
+    if phylogeny_status != 'Available' and not phylogeny_requested and selected_run.get('status') in ('OK', 'COMPLETED'):
+        phylogeny_status = 'Optional'
 
     with col1:
         quick_access_card(
@@ -319,6 +323,16 @@ def main():
         )
 
     st.markdown("")  # Spacing
+
+    col7, _, _ = st.columns(3)
+    with col7:
+        quick_access_card(
+            'phylogeny', 'Phylogenetic Analysis',
+            'Explore ASV relationships, taxonomy and evolutionary trees.', '🌳',
+            phylogeny_status,
+            bool(outputs.get('phylogeny', {}).get('tree')),
+            page='6_🌳_Phylogenetic_Analysis.py'
+        )
 
     report_run_key = st.session_state.get('quick_access_report_run_key')
     report_path = (
