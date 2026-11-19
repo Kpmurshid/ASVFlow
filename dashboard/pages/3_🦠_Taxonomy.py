@@ -23,7 +23,7 @@ tab1, tab2, tab3 = st.tabs(["📊 Overview", "🔬 Taxonomy Table", "📈 Compos
 with tab1:
     section_heading("Assignment overview", "Classification totals are read from the pipeline taxonomy statistics.")
     stats_df = scanner.get_taxonomy_stats()
-    if stats_df is not None:
+    if stats_df is not None and {"metric", "value"}.issubset(stats_df.columns):
         stats = dict(zip(stats_df["metric"], stats_df["value"]))
         total = float(stats.get("total_asvs", 0) or 0)
         ranks = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]
@@ -44,8 +44,10 @@ with tab1:
             st.plotly_chart(style_figure(fig, 360), use_container_width=True)
         with st.expander("Taxonomy statistics", expanded=False):
             st.dataframe(stats_df, use_container_width=True, hide_index=True)
+    elif stats_df is None:
+        st.info(scanner.artifact_status_message("taxonomy", "taxonomy_stats", "Taxonomy statistics"))
     else:
-        st.warning("Taxonomy statistics are not available yet.")
+        st.info("Taxonomy statistics are present but are not complete enough to display yet.")
 
 with tab2:
     section_heading("Taxonomy table", "Search ASV identifiers and narrow the table to a taxonomic assignment.")
@@ -68,7 +70,7 @@ with tab2:
         st.dataframe(display, use_container_width=True, height=480, hide_index=True)
         st.download_button("📥 Download taxonomy table", tax_df.to_csv(index=False), "taxonomy.csv", "text/csv")
     else:
-        st.warning("Taxonomy table is not available yet.")
+        st.info(scanner.artifact_status_message("taxonomy", "taxonomy_table", "Taxonomy table"))
 
 with tab3:
     section_heading("Taxonomic composition", "Aggregate observed ASV abundances by their assigned taxon.")
@@ -109,4 +111,7 @@ with tab3:
         st.dataframe(shown.sort_index(), use_container_width=True, height=380)
         st.download_button("📥 Download composition table", shown.to_csv(), f"composition_{rank.lower()}_{'relabund' if relative else 'counts'}.csv", "text/csv")
     else:
-        st.info("Composition requires both the taxonomy table and ASV abundance table.")
+        if tax_df is None:
+            st.info(scanner.artifact_status_message("taxonomy", "taxonomy_table", "Taxonomy table required for composition"))
+        if seqtab is None:
+            st.info(scanner.artifact_status_message("dada2", "seqtab", "ASV abundance table required for composition"))

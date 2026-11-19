@@ -222,7 +222,9 @@ def render(monitor, scanner, run_info: Dict):
         trace_messages = {
             'Pending': 'Task metrics are pending while this run is active.',
             'Available': 'The execution trace is available but contains no task rows.',
+            'Unavailable': 'Task metrics were unavailable when this run completed.',
             'Missing': 'Task metrics are missing for this invocation.',
+            'Missing (failed/partial run)': 'Task metrics are missing from this failed or partial run.',
             'Generation failed': 'Nextflow failed to generate the task trace for this invocation.'
         }
         st.info(trace_messages.get(trace_status, 'Task metrics are missing for this invocation.'))

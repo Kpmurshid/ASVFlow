@@ -43,7 +43,7 @@ with tab1:
             with st.expander("Read tracking data", expanded=True):
                 st.dataframe(track_df, use_container_width=True, hide_index=True)
     else:
-        st.warning("Read tracking is not available yet.")
+        st.info(scanner.artifact_status_message("dada2", "track_reads", "DADA2 read tracking"))
 
 with tab2:
     section_heading("Chimera removal", "Summary values and sample tracking are shown exactly as recorded in the DADA2 outputs.")
@@ -73,7 +73,7 @@ with tab2:
         if track_df is not None and {"sample_id", "nonchim"}.issubset(track_df.columns):
             st.caption("Per-sample retained reads are available in Read Tracking.")
     else:
-        st.warning("Chimera statistics are not available yet.")
+        st.info(scanner.artifact_status_message("dada2", "chimera_stats", "DADA2 chimera statistics"))
 
 with tab3:
     section_heading("ASV sequence table", "Filter sample columns and search ASV identifiers while retaining the complete export.")
@@ -102,4 +102,4 @@ with tab3:
             st.dataframe(display_df, use_container_width=True, height=460)
         st.download_button("📥 Download full ASV table", seqtab_df.to_csv(), "seqtab_nochim.csv", "text/csv")
     else:
-        st.warning("ASV table is not available yet.")
+        st.info(scanner.artifact_status_message("dada2", "seqtab", "DADA2 ASV table"))

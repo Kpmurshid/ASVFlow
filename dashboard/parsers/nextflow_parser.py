@@ -261,6 +261,10 @@ class NextflowMonitor:
                 run_info, kind, run_start_ms, next_start_ms
             ):
                 status = 'Generation failed'
+            elif run_info.get('status') in ('OK', 'COMPLETED'):
+                status = 'Unavailable'
+            elif run_info.get('status') in ('ERR', 'FAILED', 'ABORTED'):
+                status = 'Missing (failed/partial run)'
 
             result[kind] = {
                 'path': str(path),

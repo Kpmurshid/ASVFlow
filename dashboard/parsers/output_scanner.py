@@ -13,6 +13,18 @@ from typing import Dict, List, Optional
 class OutputScanner:
     """Scan ASVFlow output directory for available results"""
 
+    OUTPUT_KEYS = {
+        'qc': ('raw_multiqc', 'trimmed_multiqc', 'raw_fastqc', 'trimmed_fastqc'),
+        'dada2': ('seqtab', 'track_reads', 'chimera_stats', 'quality_profiles', 'error_plots'),
+        'taxonomy': ('taxonomy_table', 'taxonomy_species', 'taxonomy_stats'),
+        'community': (
+            'alpha_diversity', 'alpha_plot', 'beta_bray', 'beta_jaccard',
+            'beta_bray_plot', 'beta_jaccard_plot', 'rarefaction',
+            'sequencing_depth', 'comp_phylum_counts', 'comp_phylum_relabund',
+            'comp_genus_counts', 'comp_genus_relabund',
+        ),
+    }
+
     def __init__(self, outdir: str, run_info: Optional[Dict] = None):
         self.outdir = Path(outdir)
         self.run_info = run_info
@@ -70,12 +82,15 @@ class OutputScanner:
         Returns structured dict with file paths.
         """
         outputs = {
-            'qc': {},
-            'dada2': {},
-            'taxonomy': {},
-            'community': {},
-            'reports': {}
+            group: {
+                key: ([] if key in ('raw_fastqc', 'trimmed_fastqc', 'quality_profiles', 'error_plots') else None)
+                for key in keys
+            }
+            for group, keys in self.OUTPUT_KEYS.items()
         }
+        outputs.update({
+            'reports': {}
+        })
 
         # QC outputs
         if (self.outdir / 'qc').exists():
@@ -123,7 +138,10 @@ class OutputScanner:
         for output_key, artifact_key in artifact_keys.items():
             if self.run_info:
                 artifact = self.run_info.get('artifacts', {}).get(artifact_key, {})
-                report_states[output_key] = artifact.get('status', 'Missing')
+                status = artifact.get('status', 'Missing')
+                if status == 'Missing':
+                    status = self._missing_artifact_status()
+                report_states[output_key] = status
                 outputs['reports'][output_key] = (
                     Path(artifact['path'])
                     if artifact.get('status') == 'Available'
@@ -141,10 +159,54 @@ class OutputScanner:
 
         return outputs
 
+    def _missing_artifact_status(self) -> str:
+        """Describe an absent output in the context of its selected run."""
+        if not self.run_info:
+            return 'Missing'
+        run_status = str(self.run_info.get('status', '')).upper()
+        if run_status in ('-', 'RUNNING'):
+            return 'Pending'
+        if run_status in ('OK', 'COMPLETED'):
+            return 'Unavailable'
+        if run_status in ('ERR', 'FAILED', 'ABORTED'):
+            return 'Missing (failed/partial run)'
+        return 'Unavailable'
+
+    def get_artifact_status(self, group: str, key: str) -> str:
+        """Return Available/Pending/Unavailable/failed status for a result artifact."""
+        if group == 'reports':
+            outputs = self.scan_available_outputs()
+            status = outputs['report_states'].get(key, 'Missing')
+            return status
+        if group not in self.OUTPUT_KEYS or key not in self.OUTPUT_KEYS[group]:
+            raise KeyError(f"Unknown output artifact: {group}.{key}")
+        outputs = self.scan_available_outputs()
+        value = outputs[group][key]
+        if isinstance(value, list):
+            available = any(path.is_file() for path in value)
+        else:
+            available = value is not None and value.is_file()
+        if available:
+            return 'Available'
+        return self._missing_artifact_status()
+
+    def artifact_status_message(self, group: str, key: str, label: str) -> str:
+        """Return a state-aware explanation suitable for dashboard pages."""
+        status = self.get_artifact_status(group, key)
+        messages = {
+            'Available': f"{label} is present but could not be read or displayed yet.",
+            'Pending': f"{label} is pending while this run is active.",
+            'Unavailable': f"{label} was unavailable when this run completed.",
+            'Missing (failed/partial run)': f"{label} is missing from this failed or partial run.",
+            'Generation failed': f"Nextflow failed to generate {label.lower()} for this run.",
+            'Missing': f"{label} is missing for this run.",
+        }
+        return messages.get(status, f"{label} status: {status}.")
+
     def _find_file(self, relative_path: str) -> Optional[Path]:
         """Check if file exists and return Path or None"""
         file_path = self.outdir / relative_path
-        return file_path if file_path.exists() else None
+        return file_path if file_path.is_file() else None
 
     def get_output_stats(self) -> Dict:
         """Get summary statistics about available outputs"""

@@ -35,14 +35,18 @@ with tab1:
         if report_path:
             st.success("Report available")
         else:
-            st.info("Report pending or unavailable")
+            report_key = "raw_multiqc" if report_type == "Raw Reads" else "trimmed_multiqc"
+            st.info(scanner.artifact_status_message("qc", report_key, f"{report_type} MultiQC report"))
     with detail_col:
         st.caption(f"Selected report: {report_path.name}" if report_path else f"No {report_type.lower()} MultiQC report was found for this run.")
     if report_path:
-        html_content = report_path.read_text(encoding="utf-8")
-        components.html(html_content, height=740, scrolling=True)
-        st.download_button(f"📥 Download {report_type} MultiQC report", html_content,
-                           f"{report_type.split()[0].lower()}_multiqc_report.html", "text/html")
+        try:
+            html_content = report_path.read_text(encoding="utf-8")
+            components.html(html_content, height=740, scrolling=True)
+            st.download_button(f"📥 Download {report_type} MultiQC report", html_content,
+                               f"{report_type.split()[0].lower()}_multiqc_report.html", "text/html")
+        except (OSError, UnicodeError) as error:
+            st.info(f"The report is being written or could not be read yet: {error}")
 
 with tab2:
     section_heading("Individual FastQC reports", "Select a read set, then move between sample reports using the file selector.")
@@ -62,4 +66,5 @@ with tab2:
         st.caption(f"Viewing {selected.name}")
         components.html(selected.read_text(encoding="utf-8"), height=740, scrolling=True)
     else:
-        st.info(f"No {read_type.lower()} FastQC reports are available for this run.")
+        report_key = "raw_fastqc" if read_type == "Raw Reads" else "trimmed_fastqc"
+        st.info(scanner.artifact_status_message("qc", report_key, f"{read_type} FastQC reports"))

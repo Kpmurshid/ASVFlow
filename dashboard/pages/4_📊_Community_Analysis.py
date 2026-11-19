@@ -20,7 +20,13 @@ if "scanner" not in st.session_state or st.session_state.scanner is None:
 scanner = st.session_state.scanner
 outputs = scanner.scan_available_outputs()
 if not any(outputs["community"].values()):
-    st.info("Community analysis is optional and is not available for this run. Enable it with `--run_community true` and provide sample metadata.")
+    status = scanner.get_artifact_status("community", "alpha_diversity")
+    if status == "Pending":
+        st.info("Community analysis outputs are pending while this run is active. Enable them with `--run_community_analysis true` and provide sample metadata.")
+    elif status == "Missing (failed/partial run)":
+        st.info("Community analysis outputs are missing from this failed or partial run.")
+    else:
+        st.info("Community analysis is optional and unavailable for this completed run. Enable it with `--run_community_analysis true` and provide sample metadata.")
     st.stop()
 
 tab1, tab2, tab3 = st.tabs(["📈 Alpha Diversity", "🗺️ Beta Diversity", "🧬 Composition"])
@@ -51,7 +57,7 @@ with tab1:
             st.dataframe(alpha, use_container_width=True, hide_index=True)
         st.download_button("📥 Download alpha diversity", alpha.to_csv(index=False), "alpha_diversity.csv", "text/csv")
     else:
-        st.info("Alpha diversity is not available yet.")
+        st.info(scanner.artifact_status_message("community", "alpha_diversity", "Alpha diversity"))
 
 with tab2:
     section_heading("Beta diversity", "Inspect principal coordinate analysis for the selected distance metric.")
@@ -97,7 +103,8 @@ with tab2:
         else:
             st.info(f"{metric} coordinates do not contain usable PC1 and PC2 values.")
     else:
-        st.info(f"{metric} PCoA is not available yet.")
+        artifact_key = "beta_bray" if key == "bray" else "beta_jaccard"
+        st.info(scanner.artifact_status_message("community", artifact_key, f"{metric} PCoA"))
 
 with tab3:
     section_heading("Community composition", "Explore pipeline-provided relative abundance or count tables.")
@@ -126,4 +133,5 @@ with tab3:
         st.dataframe(data, use_container_width=True, height=380)
         st.download_button(f"📥 Download {rank} {abundance.lower()}", composition.to_csv(), f"composition_{rank_key}_{kind}.csv", "text/csv")
     else:
-        st.info(f"{rank} {abundance.lower()} output is not available.")
+        artifact_key = f"comp_{rank_key}_{kind}"
+        st.info(scanner.artifact_status_message("community", artifact_key, f"{rank} {abundance.lower()} output"))

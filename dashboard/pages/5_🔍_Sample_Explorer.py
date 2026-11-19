@@ -20,7 +20,7 @@ if "scanner" not in st.session_state or st.session_state.scanner is None:
 scanner = st.session_state.scanner
 seqtab = scanner.get_dada2_seqtab()
 if seqtab is None:
-    st.info("Sample exploration requires the completed DADA2 ASV table.")
+    st.info(scanner.artifact_status_message("dada2", "seqtab", "Sample exploration and DADA2 ASV table"))
     st.stop()
 
 samples = seqtab.columns.tolist()

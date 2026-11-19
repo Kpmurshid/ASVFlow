@@ -214,7 +214,9 @@ def main():
         trace_messages = {
             'Pending': 'Task metrics are pending while this run is active.',
             'Available': 'The execution trace is available but contains no task rows.',
+            'Unavailable': 'Task metrics were unavailable when this run completed.',
             'Missing': 'Task metrics are missing for this invocation.',
+            'Missing (failed/partial run)': 'Task metrics are missing from this failed or partial run.',
             'Generation failed': 'Nextflow failed to generate the task trace for this invocation.'
         }
         st.info(trace_messages.get(trace_status, 'Task metrics are missing for this invocation.'))
@@ -229,8 +231,15 @@ def main():
     st.caption("Navigate to detailed analysis pages")
 
     def quick_access_card(key, title, description, icon, status, available, page=None, artifact_path=None):
-        state = 'available' if available else ('optional' if status == 'Optional' else 'pending')
-        indicator = '● Available' if available else ('◌ Optional' if status == 'Optional' else '◷ Pending')
+        if available:
+            state, indicator = 'available', '● Available'
+        elif status == 'Optional':
+            state, indicator = 'optional', '◌ Optional'
+        elif status == 'Pending':
+            state, indicator = 'pending', '◷ Pending'
+        else:
+            state = status.lower().replace(' ', '_').replace('/', '_')
+            indicator = f'! {status}'
         clicked = st.button(
             f'{icon}  **{title}**  \n{description}  \n\n{indicator}',
             key=f'quick_access_{key}_{state}',
@@ -250,22 +259,31 @@ def main():
 
     col1, col2, col3 = st.columns(3)
 
+    qc_status = scanner.get_artifact_status('qc', 'raw_multiqc')
+    seqtab_status = scanner.get_artifact_status('dada2', 'seqtab')
+    taxonomy_status = scanner.get_artifact_status('taxonomy', 'taxonomy_table')
+    community_status = scanner.get_artifact_status('community', 'alpha_diversity')
+    command = selected_run.get('command', '').lower()
+    community_requested = '--run_community_analysis true' in command or '--run_community_analysis=true' in command
+    if community_status != 'Available' and not community_requested and selected_run.get('status') in ('OK', 'COMPLETED'):
+        community_status = 'Optional'
+
     with col1:
         quick_access_card(
-            'qc', 'QC Results', 'Read QC and quality metrics', '🔬', 'Available' if outputs['qc']['raw_multiqc'] else 'Pending',
-            bool(outputs['qc']['raw_multiqc']), page='1_🔬_QC_Results.py'
+            'qc', 'QC Results', 'Read QC and quality metrics', '🔬', qc_status,
+            bool(outputs.get('qc', {}).get('raw_multiqc')), page='1_🔬_QC_Results.py'
         )
 
     with col2:
         quick_access_card(
-            'dada2', 'DADA2 Results', 'ASV inference, filtering and denoising', '🧬', 'Available' if outputs['dada2']['seqtab'] else 'Pending',
-            bool(outputs['dada2']['seqtab']), page='2_🧬_DADA2_Results.py'
+            'dada2', 'DADA2 Results', 'ASV inference, filtering and denoising', '🧬', seqtab_status,
+            bool(outputs.get('dada2', {}).get('seqtab')), page='2_🧬_DADA2_Results.py'
         )
 
     with col3:
         quick_access_card(
-            'taxonomy', 'Taxonomy', 'Taxonomic assignment and abundance', '🦠', 'Available' if outputs['taxonomy']['taxonomy_table'] else 'Pending',
-            bool(outputs['taxonomy']['taxonomy_table']), page='3_🦠_Taxonomy.py'
+            'taxonomy', 'Taxonomy', 'Taxonomic assignment and abundance', '🦠', taxonomy_status,
+            bool(outputs.get('taxonomy', {}).get('taxonomy_table')), page='3_🦠_Taxonomy.py'
         )
 
     st.markdown("")  # Spacing
@@ -276,17 +294,18 @@ def main():
     with col4:
         quick_access_card(
             'community', 'Community Analysis', 'Diversity and community composition', '📊',
-            'Available' if outputs['community']['alpha_diversity'] else 'Optional',
-            bool(outputs['community']['alpha_diversity']), page='4_📊_Community_Analysis.py'
+            community_status,
+            bool(outputs.get('community', {}).get('alpha_diversity')), page='4_📊_Community_Analysis.py'
         )
 
     with col5:
-        report_states = outputs['report_states']
-        report_status = report_states['execution_report']
-        timeline_status = report_states['execution_timeline']
+        report_states = outputs.get('report_states', {})
+        report_status = report_states.get('execution_report', 'Missing')
+        timeline_status = report_states.get('execution_timeline', 'Missing')
         reports_available = report_status == 'Available' or timeline_status == 'Available'
         reports_status_text = f"Report: {report_status} · Timeline: {timeline_status}"
-        report_path = outputs['reports']['execution_report'] or outputs['reports']['execution_timeline']
+        report_outputs = outputs.get('reports', {})
+        report_path = report_outputs.get('execution_report') or report_outputs.get('execution_timeline')
         quick_access_card(
             'reports', 'Nextflow Reports', 'Execution report and timeline', '📈', reports_status_text, reports_available,
             artifact_path=report_path
@@ -295,8 +314,8 @@ def main():
     with col6:
         quick_access_card(
             'sample_explorer', 'Sample Explorer', 'Explore samples, ASVs and taxonomy', '🔎',
-            'Available' if outputs['dada2']['seqtab'] else 'Pending',
-            bool(outputs['dada2']['seqtab']), page='5_🔍_Sample_Explorer.py'
+            seqtab_status,
+            bool(outputs.get('dada2', {}).get('seqtab')), page='5_🔍_Sample_Explorer.py'
         )
 
     st.markdown("")  # Spacing
@@ -366,7 +385,9 @@ def main():
         trace_messages = {
             'Pending': 'Task execution trace is pending while this run is active.',
             'Available': 'Task execution trace is available but contains no task rows.',
+            'Unavailable': 'Task execution trace was unavailable when this run completed.',
             'Missing': 'Task execution trace is missing for this invocation.',
+            'Missing (failed/partial run)': 'Task execution trace is missing from this failed or partial run.',
             'Generation failed': 'Nextflow failed to generate the task execution trace for this invocation.'
         }
         st.info(trace_messages.get(trace_status, 'Task execution trace is missing for this invocation.'))
