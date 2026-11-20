@@ -33,35 +33,70 @@ def asvflowDashboardUrl = null
 
 // Keep terminal styling out of redirected and captured Nextflow logs.
 def asvflowAnsiEnabled = System.console() != null && !System.getenv().containsKey('NO_COLOR') && System.getenv('TERM') != 'dumb'
-def asvflowPalette = [cyan: '\u001B[36m', blue: '\u001B[34m', white: '\u001B[37m', bold: '\u001B[1m', reset: '\u001B[0m', green: '\u001B[32m', red: '\u001B[31m', yellow: '\u001B[33m']
-def asvflowPaint = { String value, String color -> asvflowAnsiEnabled ? "${asvflowPalette[color]}${value}${asvflowPalette.reset}" : value }
-def asvflowPanel = { String title, List<Map> rows, String statusColor = 'cyan' ->
-    int innerWidth = 72
+def asvflowPalette = [
+    cyan: '\u001B[96m',
+    blue: '\u001B[94m',
+    white: '\u001B[97m',
+    dim: '\u001B[2;37m',
+    bold: '\u001B[1m',
+    reset: '\u001B[0m',
+    green: '\u001B[1;92m',
+    red: '\u001B[1;91m',
+    yellow: '\u001B[1;93m',
+    magenta: '\u001B[1;95m',
+    badgeCyan: '\u001B[1;106;30m',
+    badgeGreen: '\u001B[1;102;30m',
+    badgeRed: '\u001B[1;101;97m',
+    badgeYellow: '\u001B[1;103;30m'
+]
+def asvflowPaint = { String value, String color ->
+    asvflowAnsiEnabled ? "${asvflowPalette[color] ?: ''}${value}${asvflowPalette.reset}" : value
+}
+def asvflowPanel = { String title, List rows, String statusColor = 'cyan' ->
+    int innerWidth = 88
+    int labelWidth = 22
+
     def fitValue = { String value, int width ->
         if (value.length() <= width) return value
-        int left = Math.max(1, width - 2 - 38)
-        int right = width - 1 - left
-        "${value.substring(0, left)}…${value.substring(value.length() - right)}"
+        int keep = Math.max(4, (int) ((width - 1) / 2))
+        "${value.substring(0, keep)}…${value.substring(value.length() - (width - keep - 1))}"
     }
-    def line = { String text, String color = 'white' ->
-        // Keep panel geometry stable even when a path or URL is unusually long.
-        String content = text.length() > innerWidth ? text.substring(0, innerWidth - 1) + '…' : text
-        String padded = content.padRight(innerWidth)
-        log.info "${asvflowPaint('║', 'cyan')} ${asvflowPaint(padded, color)} ${asvflowPaint('║', 'cyan')}"
+
+    def renderRow = { String rawText, String formattedText ->
+        int pad = Math.max(0, innerWidth - rawText.length())
+        String border = asvflowPaint('║', statusColor)
+        log.info " ${border} ${formattedText}${' ' * pad} ${border}"
     }
-    log.info asvflowPaint("╔${'═' * (innerWidth + 2)}╗", 'cyan')
-    line(" ${title}", statusColor)
-    log.info asvflowPaint("╟${'─' * (innerWidth + 2)}╢", 'blue')
+
+    String titleBadge = statusColor == 'green' ? 'badgeGreen' :
+                        statusColor == 'red'   ? 'badgeRed' :
+                        statusColor == 'yellow'? 'badgeYellow' : 'badgeCyan'
+
+    log.info ''
+    log.info " ${asvflowPaint("╔${'═' * (innerWidth + 2)}╗", statusColor)}"
+    String rawHeader = " ${title} "
+    renderRow(rawHeader, asvflowPaint(rawHeader, titleBadge))
+    log.info " ${asvflowPaint("╟${'─' * (innerWidth + 2)}╢", statusColor)}"
+
     rows.each { row ->
         if (row.section) {
-            line(" ${row.section}", 'blue')
+            String secLabel = "▸ ${row.section}"
+            String rule = '─' * Math.max(2, innerWidth - secLabel.length() - 1)
+            String rawSec = "${secLabel} ${rule}"
+            String styledSec = "${asvflowPaint(secLabel, 'magenta')} ${asvflowPaint(rule, 'dim')}"
+            renderRow(rawSec, styledSec)
         } else {
-            String label = row.label.toString().padRight(20)
-            String value = fitValue(row.value?.toString() ?: '—', innerWidth - label.length() - 2)
-            line(" ${label} ${value}", row.color ?: 'white')
+            String rawLabel = "  ${row.label.toString()}".padRight(labelWidth)
+            String rawVal = fitValue(row.value?.toString() ?: '—', innerWidth - labelWidth - 1)
+            String rawLine = "${rawLabel} ${rawVal}"
+
+            String valColor = row.color ?: (rawVal == 'YES' ? 'green' : (rawVal == 'NO' || rawVal == '—' ? 'dim' : 'white'))
+            String styledLine = "${asvflowPaint(rawLabel, 'dim')} ${asvflowPaint(rawVal, valColor)}"
+            renderRow(rawLine, styledLine)
         }
     }
-    log.info asvflowPaint("╚${'═' * (innerWidth + 2)}╝", 'cyan')
+
+    log.info " ${asvflowPaint("╚${'═' * (innerWidth + 2)}╝", statusColor)}"
 }
 def asvflowMode = {
     def enabled = []
