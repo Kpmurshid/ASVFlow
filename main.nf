@@ -30,6 +30,7 @@ def asvflowRunMetadataFile = null
 def asvflowRunStartedAtMs = null
 def asvflowDashboardStatus = 'DISABLED'
 def asvflowDashboardUrl = null
+def asvflowVersion = '1.0.0'
 
 // Keep terminal styling out of redirected and captured Nextflow logs.
 def asvflowAnsiEnabled = System.console() != null && !System.getenv().containsKey('NO_COLOR') && System.getenv('TERM') != 'dumb'
@@ -148,10 +149,10 @@ def asvflowPrintBrand = {
 
     if (asvflowAnsiEnabled) {
         log.info " \u001B[1;97mAMPLICON SEQUENCING PIPELINE\u001B[0m"
-        log.info " \u001B[1;96mASV\u001B[1;92mFlow\u001B[0m \u001B[1;104;97m v1.0.0 \u001B[0m"
+        log.info " \u001B[1;96mASV\u001B[1;92mFlow\u001B[0m \u001B[1;104;97m v${asvflowVersion} \u001B[0m"
     } else {
         log.info ' AMPLICON SEQUENCING PIPELINE'
-        log.info ' ASVFlow v1.0.0'
+        log.info " ASVFlow v${asvflowVersion}"
     }
 }
 

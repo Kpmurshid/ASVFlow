@@ -20,6 +20,8 @@ from parsers import NextflowMonitor, OutputScanner
 from components.navigation import render_sidebar_navigation
 from components.theme import render_home_header
 
+ASVFLOW_VERSION = "1.0.0"
+
 
 def parse_args():
     """Parse command line arguments"""
@@ -131,7 +133,7 @@ def main():
     # FOOTER
     st.sidebar.markdown(f'''
     <div class="asv-sidebar-footer">
-        <div>ASVFlow v2.0.0</div>
+        <div>ASVFlow v{escape(ASVFLOW_VERSION)}</div>
         <div>{project_dir.name}</div>
     </div>
     ''', unsafe_allow_html=True)
