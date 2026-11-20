@@ -10,7 +10,7 @@ Taxonomy is off by default. `--run_taxonomy true` assigns taxonomy with DADA2's 
 
 Community analysis is off by default and requires DADA2. When enabled, alpha diversity, beta diversity (Bray-Curtis and Jaccard), and sequencing-depth outputs are generated. Taxonomic composition is generated only when an internal or external taxonomy table is available. PERMANOVA is generated only when sample metadata is supplied. An external taxonomy table can be supplied using `--taxonomy_table`.
 
-Phylogenetic analysis is also optional (`--run_phylogenetic_analysis true`) and requires DADA2. It extracts representative sequences from the nonchimeric sequence table, aligns them with the bundled MAFFT image, and infers an unrooted Newick tree with the bundled FastTree image. It does not calculate Faith's PD or UniFrac.
+Phylogenetic analysis is optional (`--run_phylogenetic_analysis true`) and requires DADA2. It extracts representative sequences from the nonchimeric sequence table, aligns them with the bundled MAFFT image, and infers a Newick tree with FastTree. Phylogenetic diversity calculations run only when **both** community analysis and phylogenetic analysis are enabled. In that case, Faith's Phylogenetic Diversity (PD) is added to the alpha-diversity table, and weighted and unweighted UniFrac distances and PCoA results are generated. Community analysis without phylogenetic analysis retains the existing non-phylogenetic metrics and reports Faith's PD as unavailable.
 
 | Stage | Control | Default |
 |---|---|---|
@@ -119,7 +119,7 @@ nextflow run main.nf -resume --sample_sheet samplesheet.csv --primer_mode none -
 | `--silva_version`, `--silva_genus_ref`, `--silva_species_ref` | `144`, unset, unset | Reference version and optional explicit paths |
 | `--taxonomy_min_boot`, `--taxonomy_tryrc` | `50`, `true` | DADA2 classifier settings |
 | `--run_community_analysis` | `false` | Enable community analyses |
-| `--run_phylogenetic_analysis` | `false` | Align nonchimeric ASV sequences and infer an unrooted Newick tree |
+| `--run_phylogenetic_analysis` | `false` | Align nonchimeric ASV sequences, infer a FastTree Newick tree, and enable Faith's PD/UniFrac when community analysis is also enabled |
 | `--sample_metadata`, `--taxonomy_table` | unset, unset | Optional metadata and external taxonomy TSV |
 | `--composition_top_n`, `--permanova_nperm`, `--permanova_seed` | `10`, `999`, `123` | Composition and PERMANOVA settings |
 | `--enable_dashboard`, `--dashboard_port`, `--dashboard_bind_address` | `false`, `8501`, unset | Launch dashboard; bind address defaults to Tailscale IPv4 if available, otherwise loopback |
@@ -128,7 +128,7 @@ The Nextflow configuration enables Singularity-compatible container execution wi
 
 ## ASVFlow Live dashboard
 
-The Streamlit dashboard selects from runs recorded by ASVFlow and follows newly written outputs for the selected run. It supports multiple recorded runs, with one run selected at a time. Pages are Home/overview, QC Results, DADA2 Results, Taxonomy, Community Analysis, and Sample Explorer. Available views include task summaries and traces, FastQC/MultiQC results, read tracking, chimera metrics, ASV tables, taxonomy tables, diversity, composition, sequencing depth, and PERMANOVA results when those outputs exist. It is an output viewer and does not change parameters or launch analysis.
+The Streamlit dashboard selects from runs recorded by ASVFlow and follows newly written outputs for the selected run. It supports multiple recorded runs, with one run selected at a time. Pages are Home/overview, QC Results, DADA2 Results, Taxonomy, Community Analysis, and Sample Explorer. Available views include task summaries and traces, FastQC/MultiQC results, read tracking, chimera metrics, ASV tables, taxonomy tables, diversity, composition, sequencing depth, and PERMANOVA results when those outputs exist. When both community and phylogenetic analysis were enabled, Community Analysis includes Faith's PD in the alpha-diversity table and interactive weighted and unweighted UniFrac PCoA plots. The plots can color samples by the `group` metadata column when present. Missing trees and unavailable ordinations are displayed as unavailable instead of as sample coordinates. The dashboard is an output viewer and does not change parameters or launch analysis.
 
 Launch it with the pipeline:
 
@@ -178,7 +178,7 @@ Directories below are published under the selected `--outdir`; individual files 
     └── runs/                        # Run metadata used by dashboard selection
 ```
 
-Community outputs include `alpha_diversity.tsv` and PDF, Bray-Curtis/Jaccard PCoA TSV/PDF and statistics, `sequencing_depth.tsv` and related statistics/rarefaction files, composition tables/plots when taxonomy is available, and PERMANOVA results when metadata is provided. The dashboard state location may be in the user's state directory as described above.
+Community outputs include `alpha_diversity.tsv` and PDF, Bray-Curtis/Jaccard PCoA TSV/PDF and statistics, `sequencing_depth.tsv` and related statistics/rarefaction files, composition tables/plots when taxonomy is available, and PERMANOVA results when metadata is provided. With both community and phylogenetic analysis enabled, `alpha_diversity.tsv` includes `Faith_PD`, `Faith_PD_status`, and `Faith_PD_rooting` columns. The intermediate `faith_pd.tsv` is also published under `community/`. Phylogenetic beta-diversity publishes `beta_diversity_distances_weighted_unifrac.rds` and `beta_diversity_distances_unweighted_unifrac.rds`, coordinate tables `beta_diversity_weighted_unifrac_pcoa.tsv` and `beta_diversity_unweighted_unifrac_pcoa.tsv`, `beta_diversity_phylogenetic_stats.tsv`, and `phylogenetic_diversity_status.txt`. The distance files are R `dist` objects. PCoA coordinate tables include sample IDs and available sample metadata. Statistics contain eigenvalues and explained variance for positive axes; degenerate ordinations report unavailable status and a reason with no fabricated variance. When no tree is available, the process still publishes explicit unavailable/status files and empty PCoA/statistics tables. The dashboard state location may be in the user's state directory as described above.
 
 When enabled, `phylogeny/` contains `asv_sequences.fasta`, `asv_sequence_ids.tsv`, `asv_alignment.fasta`, and `phylogeny_status.txt`. `asv_tree.nwk` is also produced when there is at least one sequence: one ASV gets a valid single-leaf Newick string, while two or more get a FastTree result. Empty input is reported in the status file and produces no tree. The dashboard displays these states instead of drawing them as an inferred multi-ASV tree.
 
@@ -203,7 +203,6 @@ The validation script also regenerates synthetic data. Dashboard tests require P
 
 - The workflow accepts paired-end reads and provides a 16S-oriented DADA2 analysis. ITS support is not verified and should not be assumed.
 - Taxonomy uses DADA2-compatible SILVA references; other taxonomy databases are not configured by the workflow.
-- Faith's PD and UniFrac are not generated.
 - Taxonomy, species addition, community analysis, and the dashboard are optional stages/features as described above.
 
 ## References
@@ -212,4 +211,6 @@ The validation script also regenerates synthetic data. Dashboard tests require P
 - Quast C, Pruesse E, Yilmaz P, et al. (2013). The SILVA ribosomal RNA gene database project. *Nucleic Acids Research* 41:D590–D596. doi:10.1093/nar/gks1219.
 - Di Tommaso P, Chatzou M, Floden EW, et al. (2017). Nextflow enables reproducible computational workflows. *Nature Biotechnology* 35:316–319. doi:10.1038/nbt.3820.
 
-When both community and phylogenetic analysis are enabled, ASVFlow reports Faith's PD and weighted/unweighted UniFrac. Faith's PD uses a midpoint-rooted copy of the FastTree tree; the original inferred Newick is preserved. Midpoint rooting assumes approximately clocklike evolution and is a pragmatic root in the absence of an outgroup. UniFrac uses the original unrooted FastTree tree (the distances are root-invariant). Exact ASV tip/table ID matching is required. Zero-read samples have undefined Faith's PD and are excluded from pairwise distances. Degenerate UniFrac ordinations retain coordinates as unavailable and do not claim explained variance.
+When both community and phylogenetic analysis are enabled, Faith's PD and weighted/unweighted UniFrac are calculated from the nonchimeric ASV abundance table and FastTree tree. ASV tip labels must match abundance-table identifiers exactly; mismatches fail the process. The workflow creates a rooted copy with `ape::root`, using the first exact ASV tip as the computational outgroup. This is a consistent rooting convention, not a biological outgroup assignment. The original FastTree Newick topology and branch lengths are not modified. Faith's PD sums the branch lengths connecting present ASVs to the root, so it depends on this rooting convention. Both weighted and unweighted UniFrac use the explicitly rooted tree copy; their distance definitions are root-invariant.
+
+Zero-read samples receive undefined (`NA`) Faith's PD and are excluded from UniFrac pairwise distances. For ordinations with a tree, PCoA tables retain analyzed sample IDs. When there are fewer than two nonzero samples or no positive eigenvalues, coordinates and explained variance are marked unavailable with a reason; no coordinates or variance percentages are invented. If no tree is available, phylogenetic PCoA tables are empty and status outputs report the unavailable state.
