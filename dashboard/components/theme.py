@@ -55,9 +55,9 @@ def apply_theme() -> None:
     [data-testid="stSidebar"] [data-testid="stButton"] button:hover {{
       border-color: var(--asv-cyan); color: #fff; background: rgba(13,126,139,.42);
     }}
-    .asv-brand {{ text-align:center; padding: .7rem .5rem 1.1rem; margin: 0 0 1rem;
+    .asv-brand {{ text-align:center; padding: .55rem .5rem .9rem; margin: 0 0 1rem;
       border-bottom: 1px solid rgba(140,220,228,.24); }}
-    .asv-brand img {{ width: 104px; height: auto; display:block; margin: 0 auto .5rem; }}
+    .asv-brand img {{ width: 156px; max-width:100%; height: auto; display:block; margin: 0 auto .6rem; }}
     .asv-brand-title {{ color:#fff; font-size:1.18rem; font-weight:750; letter-spacing:.02em; }}
     .asv-brand-sub {{ color:#a9cbd4; font-size:.76rem; margin-top:.15rem; }}
     [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"] {{
