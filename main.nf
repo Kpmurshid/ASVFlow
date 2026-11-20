@@ -18,6 +18,7 @@ include { ADD_SPECIES               } from './modules/taxonomy/add_species.nf'
 include { PREPARE_INPUTS            } from './modules/community/prepare_inputs.nf'
 include { ALPHA_DIVERSITY           } from './modules/community/alpha_diversity.nf'
 include { BETA_DIVERSITY            } from './modules/community/beta_diversity.nf'
+include { PHYLOGENETIC_DIVERSITY    } from './modules/community/phylogenetic_diversity.nf'
 include { TAXONOMIC_COMPOSITION     } from './modules/community/taxonomic_composition.nf'
 include { SEQUENCING_DEPTH          } from './modules/community/sequencing_depth.nf'
 include { PERMANOVA                 } from './modules/community/permanova.nf'
@@ -573,7 +574,7 @@ workflow {
             if (params.sample_metadata) {
                 metadata_ch = Channel.fromPath(params.sample_metadata, checkIfExists: true)
             } else {
-                metadata_ch = Channel.fromPath("$projectDir/NO_METADATA", checkIfExists: false).ifEmpty(file("$projectDir/NO_METADATA"))
+                metadata_ch = Channel.fromPath("${projectDir}/config/sentinels/NO_METADATA", checkIfExists: false).ifEmpty(file("${projectDir}/config/sentinels/NO_METADATA"))
             }
 
             // Prepare inputs
@@ -584,8 +585,24 @@ workflow {
                 metadata_ch
             )
 
-            // Alpha diversity (always run)
-            ALPHA_DIVERSITY(PREPARE_INPUTS.out.phyloseq_rds)
+            // Optional tree sentinel keeps community analysis runnable when
+            // phylogeny was requested but FastTree has no available tree.
+            def faith_pd_ch
+            if (params.run_phylogenetic_analysis) {
+                def tree_ch = BUILD_ASV_PHYLOGENY.out.tree.ifEmpty(file("${projectDir}/config/sentinels/NO_TREE"))
+                PHYLOGENETIC_DIVERSITY(
+                    PREPARE_INPUTS.out.phyloseq_rds,
+                    tree_ch,
+                    file("${projectDir}/config/sentinels/NO_METADATA"),
+                    file("${projectDir}/bin/phylogenetic_diversity.R")
+                )
+                faith_pd_ch = PHYLOGENETIC_DIVERSITY.out.faith_pd
+            } else {
+                faith_pd_ch = Channel.value(file("${projectDir}/config/sentinels/NO_FAITH_PD.tsv"))
+            }
+
+            // Alpha diversity (Faith's PD joins into the existing table)
+            ALPHA_DIVERSITY(PREPARE_INPUTS.out.phyloseq_rds, faith_pd_ch)
 
             // Beta diversity (always run, saves distance matrices)
             BETA_DIVERSITY(PREPARE_INPUTS.out.phyloseq_rds)

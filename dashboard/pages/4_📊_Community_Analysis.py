@@ -36,7 +36,7 @@ with tab1:
     alpha = scanner.get_alpha_diversity()
     if alpha is not None:
         valid = alpha[alpha["status"].astype(str).str.lower() == "ok"] if "status" in alpha else alpha
-        metrics = [m for m in ["Observed", "Chao1", "Shannon", "Simpson"] if m in valid]
+        metrics = [m for m in ["Observed", "Chao1", "Shannon", "Simpson", "Faith_PD"] if m in valid]
         if not valid.empty and metrics:
             cols = st.columns(len(metrics))
             for col, metric in zip(cols, metrics):
@@ -61,8 +61,11 @@ with tab1:
 
 with tab2:
     section_heading("Beta diversity", "Inspect principal coordinate analysis for the selected distance metric.")
-    metric = st.radio("Distance metric", ["Bray-Curtis", "Jaccard"], horizontal=True)
-    key = "bray" if metric == "Bray-Curtis" else "jaccard"
+    options = {"Bray-Curtis": "bray", "Jaccard": "jaccard"}
+    if scanner.get_beta_diversity_pcoa("weighted_unifrac") is not None: options["Weighted UniFrac"] = "weighted_unifrac"
+    if scanner.get_beta_diversity_pcoa("unweighted_unifrac") is not None: options["Unweighted UniFrac"] = "unweighted_unifrac"
+    metric = st.radio("Distance metric", list(options), horizontal=True)
+    key = options[metric]
     pcoa = scanner.get_beta_diversity_pcoa(metric=key)
     if pcoa is not None:
         coordinate_cols = [c for c in ["PC1", "PC2"] if c in pcoa]
@@ -73,12 +76,13 @@ with tab2:
                              text="sample_id" if "sample_id" in valid else None,
                              title=f"{metric} PCoA", color_discrete_sequence=None)
             fig.update_traces(marker=dict(size=11, line=dict(width=1, color="white")), textposition="top center")
-            stats_path = Path(scanner.outdir) / "community" / "beta_diversity_stats.tsv"
+            stats_path = Path(scanner.outdir) / "community" / ("beta_diversity_phylogenetic_stats.tsv" if "unifrac" in key else "beta_diversity_stats.tsv")
             if stats_path.is_file():
                 try:
                     stats = pd.read_csv(stats_path, sep="\t")
-                    row1 = stats[(stats["metric"] == metric) & (stats["PC"] == 1)]
-                    row2 = stats[(stats["metric"] == metric) & (stats["PC"] == 2)]
+                    stat_metric = key if "unifrac" in key else metric
+                    row1 = stats[(stats["metric"] == stat_metric) & (stats["PC"] == 1)]
+                    row2 = stats[(stats["metric"] == stat_metric) & (stats["PC"] == 2)]
                     xlab = f"PC1 ({float(row1.iloc[0]['variance_explained']):.1f}%)" if not row1.empty else "PC1"
                     ylab = f"PC2 ({float(row2.iloc[0]['variance_explained']):.1f}%)" if not row2.empty else "PC2"
                     fig.update_xaxes(title=xlab); fig.update_yaxes(title=ylab)
@@ -103,7 +107,9 @@ with tab2:
         else:
             st.info(f"{metric} coordinates do not contain usable PC1 and PC2 values.")
     else:
-        artifact_key = "beta_bray" if key == "bray" else "beta_jaccard"
+        artifact_key = {"bray": "beta_bray", "jaccard": "beta_jaccard",
+                        "weighted_unifrac": "beta_unifrac_weighted",
+                        "unweighted_unifrac": "beta_unifrac_unweighted"}[key]
         st.info(scanner.artifact_status_message("community", artifact_key, f"{metric} PCoA"))
 
 with tab3:

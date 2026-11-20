@@ -8,6 +8,7 @@ process ALPHA_DIVERSITY {
 
     input:
         path(phyloseq_rds)
+        path(faith_pd_table)
 
     output:
         path("alpha_diversity.tsv"), emit: alpha_div
@@ -28,6 +29,16 @@ process ALPHA_DIVERSITY {
 
     # Calculate alpha diversity metrics
     alpha_div <- estimate_richness(physeq, measures=c("Observed", "Chao1", "Shannon", "Simpson"))
+    faith <- read.delim("${faith_pd_table}", check.names=FALSE, stringsAsFactors=FALSE)
+    if (all(c("sample_id", "Faith_PD") %in% names(faith))) {
+        alpha_div\$Faith_PD <- faith\$Faith_PD[match(rownames(alpha_div), faith\$sample_id)]
+        alpha_div\$Faith_PD_status <- if ("Faith_PD_status" %in% names(faith)) faith\$Faith_PD_status[match(rownames(alpha_div), faith\$sample_id)] else ifelse(is.na(alpha_div\$Faith_PD), "unavailable", "ok")
+        alpha_div\$Faith_PD_rooting <- if ("Faith_PD_rooting" %in% names(faith)) faith\$Faith_PD_rooting[match(rownames(alpha_div), faith\$sample_id)] else "unavailable: phylogenetic analysis not enabled"
+    } else {
+        alpha_div\$Faith_PD <- NA_real_
+        alpha_div\$Faith_PD_status <- "unavailable"
+        alpha_div\$Faith_PD_rooting <- "unavailable: phylogenetic analysis not enabled"
+    }
 
     # Handle zero-read samples: set metrics to NA (not 0)
     otu_matrix <- as(otu_table(physeq), "matrix")
@@ -36,7 +47,11 @@ process ALPHA_DIVERSITY {
     zero_samples <- rowSums(otu_matrix) == 0
     if (any(zero_samples)) {
         cat("Zero-read samples detected:", sum(zero_samples), "\\n")
-        alpha_div[zero_samples, ] <- NA
+        numeric_metrics <- intersect(c("Observed", "Chao1", "Shannon", "Simpson", "Faith_PD"), colnames(alpha_div))
+        alpha_div[zero_samples, numeric_metrics] <- NA
+        if ("Faith_PD_status" %in% colnames(alpha_div) && any(alpha_div\$Faith_PD_status[zero_samples] != "unavailable", na.rm=TRUE)) {
+            alpha_div\$Faith_PD_status[zero_samples] <- "zero_reads"
+        }
     }
 
     # Add status column
@@ -61,7 +76,7 @@ process ALPHA_DIVERSITY {
     }
 
     # Reorder columns
-    col_order <- c("sample_id", "Observed", "Chao1", "Shannon", "Simpson", "status")
+    col_order <- c("sample_id", "Observed", "Chao1", "Shannon", "Simpson", "Faith_PD", "Faith_PD_status", "Faith_PD_rooting", "status")
     if ("group" %in% colnames(alpha_div)) col_order <- c(col_order, "group")
     alpha_div <- alpha_div[, col_order]
 
@@ -74,7 +89,7 @@ process ALPHA_DIVERSITY {
     if (nrow(alpha_valid) > 0) {
         pdf("alpha_diversity.pdf", width=10, height=8)
         
-        metrics <- c("Observed", "Chao1", "Shannon", "Simpson")
+        metrics <- c("Observed", "Chao1", "Shannon", "Simpson", "Faith_PD")
         for (metric in metrics) {
             if ("group" %in% colnames(alpha_valid) && length(unique(alpha_valid\$group)) > 1) {
                 p <- ggplot(alpha_valid, aes_string(x="group", y=metric, fill="group")) +
@@ -103,7 +118,7 @@ process ALPHA_DIVERSITY {
         stats_list <- list()
         for (grp in unique(alpha_valid\$group)) {
             grp_data <- alpha_valid[alpha_valid\$group == grp, ]
-            for (metric in c("Observed", "Chao1", "Shannon", "Simpson")) {
+            for (metric in c("Observed", "Chao1", "Shannon", "Simpson", "Faith_PD")) {
                 vals <- grp_data[[metric]]
                 vals <- vals[!is.na(vals)]
                 if (length(vals) > 0) {
@@ -135,7 +150,7 @@ process ALPHA_DIVERSITY {
         cat("\\nZero-read sample IDs:\\n")
         cat("  ", paste(alpha_div\$sample_id[zero_samples], collapse=", "), "\\n")
     }
-    cat("\\nMetrics calculated: Observed, Chao1, Shannon, Simpson\\n")
+    cat("\\nMetrics calculated: Observed, Chao1, Shannon, Simpson, Faith_PD when tree available\\n")
     cat("NA values indicate undefined metrics (not zero)\\n")
     sink()
 
@@ -145,7 +160,7 @@ process ALPHA_DIVERSITY {
     stub:
     """
     #!/usr/bin/env Rscript
-    df <- data.frame(sample_id="TEST1", Observed=100, Chao1=120, Shannon=3.5, Simpson=0.95, status="ok")
+    df <- data.frame(sample_id="TEST1", Observed=100, Chao1=120, Shannon=3.5, Simpson=0.95, Faith_PD=NA_real_, status="ok")
     write.table(df, "alpha_diversity.tsv", sep="\\t", quote=FALSE, row.names=FALSE)
     writeLines("=== ALPHA_DIVERSITY Summary (stub) ===", "alpha_diversity_summary.txt")
     """

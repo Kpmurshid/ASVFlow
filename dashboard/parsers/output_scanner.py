@@ -19,7 +19,8 @@ class OutputScanner:
         'taxonomy': ('taxonomy_table', 'taxonomy_species', 'taxonomy_stats'),
         'community': (
             'alpha_diversity', 'alpha_plot', 'beta_bray', 'beta_jaccard',
-            'beta_bray_plot', 'beta_jaccard_plot', 'rarefaction',
+            'beta_bray_plot', 'beta_jaccard_plot', 'beta_unifrac_weighted',
+            'beta_unifrac_unweighted', 'alpha_phylogenetic_status', 'rarefaction',
             'sequencing_depth', 'comp_phylum_counts', 'comp_phylum_relabund',
             'comp_genus_counts', 'comp_genus_relabund',
         ),
@@ -122,6 +123,9 @@ class OutputScanner:
             outputs['community']['beta_jaccard'] = self._find_file('community/beta_diversity_jaccard_pcoa.tsv')
             outputs['community']['beta_bray_plot'] = self._find_file('community/beta_diversity_bray_pcoa.pdf')
             outputs['community']['beta_jaccard_plot'] = self._find_file('community/beta_diversity_jaccard_pcoa.pdf')
+            outputs['community']['beta_unifrac_weighted'] = self._find_file('community/beta_diversity_weighted_unifrac_pcoa.tsv')
+            outputs['community']['beta_unifrac_unweighted'] = self._find_file('community/beta_diversity_unweighted_unifrac_pcoa.tsv')
+            outputs['community']['alpha_phylogenetic_status'] = self._find_file('community/phylogenetic_diversity_status.txt')
             outputs['community']['rarefaction'] = self._find_file('community/rarefaction_curves.pdf')
             outputs['community']['sequencing_depth'] = self._find_file('community/sequencing_depth.tsv')
             outputs['community']['comp_phylum_counts'] = self._find_file('community/composition_phylum_counts.tsv')
@@ -187,6 +191,16 @@ class OutputScanner:
             raise KeyError(f"Unknown output artifact: {group}.{key}")
         outputs = self.scan_available_outputs()
         value = outputs[group][key]
+        if group == 'community' and key in ('beta_unifrac_weighted', 'beta_unifrac_unweighted') and value is not None:
+            phylo_status = self._phylogenetic_diversity_status()
+            if phylo_status and phylo_status.lower().startswith('unavailable'):
+                return 'Unavailable'
+            try:
+                frame = pd.read_csv(value, sep='\t')
+                if frame.empty:
+                    return 'Generation failed' if phylo_status and phylo_status.lower().startswith('available') else 'Invalid/empty output'
+            except Exception:
+                return 'Generation failed'
         if isinstance(value, list):
             available = any(path.is_file() for path in value)
         else:
@@ -212,6 +226,15 @@ class OutputScanner:
         """Check if file exists and return Path or None"""
         file_path = self.outdir / relative_path
         return file_path if file_path.is_file() else None
+
+    def _phylogenetic_diversity_status(self) -> Optional[str]:
+        status_file = self._find_file('community/phylogenetic_diversity_status.txt')
+        if not status_file:
+            return None
+        try:
+            return status_file.read_text().strip().splitlines()[0]
+        except (OSError, IndexError):
+            return None
 
     def get_output_stats(self) -> Dict:
         """Get summary statistics about available outputs"""
@@ -315,7 +338,9 @@ class OutputScanner:
         Args:
             metric: 'bray' or 'jaccard'
         """
-        if metric == 'bray':
+        if metric in ('weighted_unifrac', 'unweighted_unifrac'):
+            pcoa_file = self._find_file(f'community/beta_diversity_{metric}_pcoa.tsv')
+        elif metric == 'bray':
             pcoa_file = self._find_file('community/beta_diversity_bray_pcoa.tsv')
         elif metric == 'jaccard':
             pcoa_file = self._find_file('community/beta_diversity_jaccard_pcoa.tsv')
@@ -327,6 +352,8 @@ class OutputScanner:
 
         try:
             df = pd.read_csv(pcoa_file, sep='\t')
+            if metric in ('weighted_unifrac', 'unweighted_unifrac') and df.empty:
+                return None
             return df
         except Exception as e:
             print(f"Warning: Failed to parse beta diversity PCoA: {e}")
