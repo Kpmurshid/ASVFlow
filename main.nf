@@ -119,14 +119,15 @@ def asvflowPrintBrand = {
         ['0000000', '0000000', '1100011', '1101011', '1111111', '0110110'] // w
     ]
 
+    // Exact RGB colors sampled from the ASVFlow logo
     def bgColors = [
-        '\u001B[106m', // A - Bright Cyan
-        '\u001B[104m', // S - Bright Blue
-        '\u001B[105m', // V - Bright Magenta
-        '\u001B[102m', // F - Bright Green
-        '\u001B[103m', // l - Bright Yellow
-        '\u001B[101m', // o - Bright Red
-        '\u001B[106m'  // w - Bright Cyan
+        '\u001B[48;2;248;250;252m', // A - Crisp White
+        '\u001B[48;2;248;250;252m', // S - Crisp White
+        '\u001B[48;2;248;250;252m', // V - Crisp White
+        '\u001B[48;2;0;229;255m',   // F - Electric Cyan
+        '\u001B[48;2;0;235;185m',   // l - Cyan-Mint
+        '\u001B[48;2;85;242;95m',   // o - Mint-Lime
+        '\u001B[48;2;205;245;20m'   // w - Bright Yellow-Lime
     ]
     String reset = '\u001B[0m'
 
@@ -141,15 +142,15 @@ def asvflowPrintBrand = {
             } else {
                 pattern.replace('1', '@@').replace('0', '  ')
             }
-        }.join(' ') // Tighter 1-space kerning between letters
+        }.join(' ')
 
         log.info " ${wordmark}"
     }
     log.info ''
 
     if (asvflowAnsiEnabled) {
-        log.info " \u001B[1;97mAMPLICON SEQUENCING PIPELINE\u001B[0m"
-        log.info " \u001B[1;96mASV\u001B[1;92mFlow\u001B[0m \u001B[1;104;97m v${asvflowVersion} \u001B[0m"
+        log.info " \u001B[1;38;2;248;250;252mAMPLICON SEQUENCING PIPELINE\u001B[0m"
+        log.info " \u001B[1;38;2;248;250;252mASV\u001B[38;2;0;229;255mFl\u001B[38;2;205;245;20mow\u001B[0m \u001B[1;48;2;0;165;195;38;2;248;250;252m v${asvflowVersion} \u001B[0m"
     } else {
         log.info ' AMPLICON SEQUENCING PIPELINE'
         log.info " ASVFlow v${asvflowVersion}"
