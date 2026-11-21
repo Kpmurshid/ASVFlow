@@ -60,7 +60,7 @@ def metadata_validator(script, identity, directory):
         body=[guard, ast.Return(value=ast.Constant(value=True))], decorator_list=[],
     )
     namespace = {
-        "os": os, "stat": stat, "identity": identity,
+        "os": os, "re": re, "stat": stat, "identity": identity,
         "pid": 424242, "pgid": 424242, "uid": os.getuid(),
         "project": str(ROOT), "outdir": str(ROOT / "results" / "identity-test"),
         "port": "8501", "identity_path": str(Path(directory) / "dashboard.identity"),

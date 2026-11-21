@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Focused dashboard lifecycle integration tests using local C process fixtures."""
 import hashlib
+import json
 import os
 import pathlib
 import shutil
@@ -188,6 +189,128 @@ class Lifecycle(unittest.TestCase):
         result = self.stop()
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertFalse((state / "dashboard.pid").exists())
+
+    def make_previous_boot_state(self, stop_processes=True):
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        state = self.state_dir()
+        identity_path = state / "dashboard.identity"
+        identity = json.loads(identity_path.read_text())
+        identity["boot_id"] = "00000000-0000-0000-0000-000000000001"
+        identity_path.write_text(json.dumps(identity))
+        os.chmod(identity_path, 0o600)
+        parent = int((state / "dashboard.pid").read_text())
+        child = int(subprocess.check_output(["pgrep", "-P", str(parent)], text=True).splitlines()[0])
+        if stop_processes:
+            os.kill(child, 9)
+            os.kill(parent, 9)
+            time.sleep(.2)
+        return state
+
+    def state_snapshot(self, state):
+        return {path.name: path.read_bytes() for path in state.iterdir() if path.is_file()}
+
+    def test_previous_boot_state_with_free_port_is_cleaned_and_relaunched(self):
+        state = self.make_previous_boot_state()
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        identity = json.loads((state / "dashboard.identity").read_text())
+        self.assertEqual(identity["boot_id"], pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip())
+        self.assertNotEqual(int((state / "dashboard.pid").read_text()), 0)
+        self.assertIn("previous boot", result.stdout)
+
+    def test_previous_boot_state_with_occupied_port_is_preserved(self):
+        state = self.make_previous_boot_state()
+        before = self.state_snapshot(state)
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", self.port)); listener.listen()
+        try:
+            result = self.launch()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("remains in use", result.stdout)
+            self.assertEqual(self.state_snapshot(state), before)
+        finally:
+            listener.close()
+
+    def test_previous_boot_state_with_port_check_failure_is_preserved(self):
+        state = self.make_previous_boot_state()
+        before = self.state_snapshot(state)
+        shim = self.case / "shim"
+        shim.mkdir()
+        ss = shim / "ss"
+        ss.write_text("#!/bin/sh\nexit 2\n")
+        ss.chmod(0o755)
+        self.env["PATH"] = f"{shim}:{self.env['PATH']}"
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not confirm", result.stdout)
+        self.assertEqual(self.state_snapshot(state), before)
+
+    def test_previous_boot_state_with_mismatched_identity_is_preserved(self):
+        state = self.make_previous_boot_state()
+        identity_path = state / "dashboard.identity"
+        identity = json.loads(identity_path.read_text())
+        identity["outdir"] = str(self.case / "another-output")
+        identity_path.write_text(json.dumps(identity))
+        before = self.state_snapshot(state)
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not validate previous-boot", result.stdout)
+        self.assertEqual(self.state_snapshot(state), before)
+
+    def test_previous_boot_state_with_invalid_metadata_is_preserved(self):
+        state = self.make_previous_boot_state()
+        identity_path = state / "dashboard.identity"
+        identity_path.write_text("{invalid json\n")
+        before = self.state_snapshot(state)
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not validate previous-boot", result.stdout)
+        self.assertEqual(self.state_snapshot(state), before)
+
+    def test_failed_shell_kill_zero_with_eprem_does_not_recover_existing_pid(self):
+        state = self.make_previous_boot_state(stop_processes=False)
+        before = self.state_snapshot(state)
+        pid = int((state / "dashboard.pid").read_text())
+        bash_env = self.case / "bash_env.sh"
+        bash_env.write_text(
+            f"kill() {{ if [[ $1 == -0 && $2 == {pid} ]]; then return 1; fi; builtin kill \"$@\"; }}\n"
+        )
+        self.env["BASH_ENV"] = str(bash_env)
+        sitecustomize = self.case / "sitecustomize.py"
+        sitecustomize.write_text(
+            "import errno, os, sys\n"
+            "if len(sys.argv) > 1 and sys.argv[1] == 'stale-boot':\n"
+            "    _kill = os.kill\n"
+            f"    _target = {pid}\n"
+            "    def _deny(target, sig):\n"
+            "        if target == _target and sig == 0:\n"
+            "            raise PermissionError(errno.EPERM, 'operation not permitted')\n"
+            "        return _kill(target, sig)\n"
+            "    os.kill = _deny\n"
+        )
+        self.env["PYTHONPATH"] = str(self.case)
+        try:
+            result = self.launch()
+        finally:
+            self.env.pop("BASH_ENV", None)
+            self.env.pop("PYTHONPATH", None)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cannot establish that the stored launcher PID is absent", result.stdout)
+        self.assertEqual(self.state_snapshot(state), before)
+        os.kill(pid, 0)
+
+    def test_same_boot_stale_state_still_uses_process_group_verification(self):
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        state = self.state_dir()
+        parent = int((state / "dashboard.pid").read_text())
+        child = int(subprocess.check_output(["pgrep", "-P", str(parent)], text=True).splitlines()[0])
+        os.kill(child, 9); os.kill(parent, 9)
+        time.sleep(.2)
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("previous boot", result.stdout)
 
     def test_inaccessible_proc_fails_closed(self):
         self.assertEqual(self.launch().returncode, 0)

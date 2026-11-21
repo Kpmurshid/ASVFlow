@@ -530,7 +530,7 @@ if action == "legacy-inspect":
             raise SystemExit(0)
     raise SystemExit(2)
 
-if action == "inspect":
+if action in ("inspect", "stale-boot"):
     if len(rest) < 1:
         fail("inspect action requires identity_path")
     identity_path = rest[0]
@@ -577,7 +577,8 @@ if (
     or identity["project"] != project
     or identity["outdir"] != outdir
     or identity["port"] != port
-    or identity["boot_id"] != open("/proc/sys/kernel/random/boot_id", encoding="ascii").read().strip()
+    or not isinstance(identity["boot_id"], str)
+    or not re.fullmatch(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}", identity["boot_id"])
     or identity["start_ticks"] <= 0
     or identity["exe_state"] not in ("readable", "inaccessible")
     or (identity["exe_state"] == "readable" and (
@@ -591,6 +592,28 @@ if (
     or metadata_dir.st_uid != os.getuid()
     or metadata_dir.st_mode & 0o022
 ):
+    fail("Dashboard ownership metadata is invalid or does not match this launch")
+
+with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as stream:
+    current_boot_id = stream.read().strip()
+if action == "stale-boot":
+    # Bash kill -0 cannot distinguish ESRCH from EPERM, so independently prove
+    # absence here before allowing the caller to consider previous-boot cleanup.
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        pass
+    except PermissionError as error:
+        fail(f"Cannot establish that the stored launcher PID is absent: {error}")
+    except OSError as error:
+        fail(f"Cannot establish that the stored launcher PID is absent: {error}")
+    else:
+        fail("The stored launcher PID exists; refusing previous-boot recovery")
+
+    # A different kernel boot proves the recorded process group cannot survive.
+    # The shell checks the recorded port before removing any state files.
+    raise SystemExit(0 if identity["boot_id"] != current_boot_id else 2)
+if identity["boot_id"] != current_boot_id:
     fail("Dashboard ownership metadata is invalid or does not match this launch")
 
 
@@ -1067,23 +1090,46 @@ if [ -f "${PID_FILE}" ] && [ -f "${PORT_FILE}" ]; then
             exit 1
         fi
     else
-        if dashboard_process_helper inspect "${OLD_PID}" "${OLD_PGID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}" "${IDENTITY_FILE}"; then
-            log_error "The stored launcher PID is unavailable but its process group is active"
-            log_error "Refusing cleanup without confirmed dashboard termination"
-            exit 1
-        else
-            HELPER_STATUS=$?
-            if [ "${HELPER_STATUS}" -eq 2 ]; then
-                if check_port "${OLD_PORT}"; then
-                    log_warning "Verified dashboard process group is gone, cleaning stale state"
-                    rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}" "${BIND_ADDRESS_FILE}" "${IDENTITY_FILE}"
+        if dashboard_process_helper stale-boot "${OLD_PID}" "${OLD_PGID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}" "${IDENTITY_FILE}"; then
+            if check_port_free_verified "${OLD_PORT}"; then
+                log_warning "Validated dashboard metadata belongs to a previous boot and port ${OLD_PORT} is free; cleaning stale state"
+                rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}" "${BIND_ADDRESS_FILE}" "${IDENTITY_FILE}"
+            else
+                PORT_CHECK_STATUS=$?
+                if [ "${PORT_CHECK_STATUS}" -eq 1 ]; then
+                    log_error "Port ${OLD_PORT} remains in use; preserving dashboard state"
                 else
-                    log_error "Dashboard process group is gone but port ${OLD_PORT} remains in use"
-                    log_error "State files preserved in: ${DASHBOARD_DIR}"
+                    log_error "Could not confirm port ${OLD_PORT} is free; preserving dashboard state"
+                fi
+                log_error "State files preserved in: ${DASHBOARD_DIR}"
+                exit 1
+            fi
+        else
+            BOOT_CHECK_STATUS=$?
+            if [ "${BOOT_CHECK_STATUS}" -eq 2 ]; then
+                if dashboard_process_helper inspect "${OLD_PID}" "${OLD_PGID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}" "${IDENTITY_FILE}"; then
+                    log_error "The stored launcher PID is unavailable but its process group is active"
+                    log_error "Refusing cleanup without confirmed dashboard termination"
                     exit 1
+                else
+                    HELPER_STATUS=$?
+                    if [ "${HELPER_STATUS}" -eq 2 ]; then
+                        if check_port "${OLD_PORT}"; then
+                            log_warning "Verified dashboard process group is gone, cleaning stale state"
+                            rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}" "${BIND_ADDRESS_FILE}" "${IDENTITY_FILE}"
+                        else
+                            log_error "Dashboard process group is gone but port ${OLD_PORT} remains in use"
+                            log_error "State files preserved in: ${DASHBOARD_DIR}"
+                            exit 1
+                        fi
+                    else
+                        log_error "Could not verify stale dashboard ownership"
+                        log_error "State files preserved in: ${DASHBOARD_DIR}"
+                        exit 1
+                    fi
                 fi
             else
-                log_error "Could not verify stale dashboard ownership"
+                log_error "Could not validate previous-boot dashboard ownership metadata"
                 log_error "State files preserved in: ${DASHBOARD_DIR}"
                 exit 1
             fi
