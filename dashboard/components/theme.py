@@ -128,7 +128,11 @@ def apply_theme() -> None:
 
 def render_brand() -> None:
     logo = _asset_url("mkp-logo-sm.png")
-    logo_markup = f'<img src="{logo}" alt="ASVFlow logo">' if logo else ""
+    logo_markup = (
+        f'<img src="{logo}" alt="ASVFlow logo" width="156" '
+        'style="max-width:100%;height:auto;display:block;margin:0 auto .6rem">'
+        if logo else ""
+    )
     st.markdown(
         f'<div class="asv-brand">{logo_markup}<div class="asv-brand-title">ASVFlow Live</div>'
         '<div class="asv-brand-sub">Interactive Results Explorer</div></div>',
