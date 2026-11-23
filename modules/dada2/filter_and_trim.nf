@@ -30,6 +30,7 @@ process FILTER_AND_TRIM {
         truncQ = ${params.dada2_trunc_q},
         maxN = ${params.dada2_max_n},
         minLen = ${params.dada2_min_len},
+        rm.lowcomplex = ${params.dada2_rm_lowcomplex},
         rm.phix = ${rm_phix},
         compress = TRUE,
         multithread = ${task.cpus}
