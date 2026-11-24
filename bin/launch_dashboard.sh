@@ -9,16 +9,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTDIR="${1:-results}"
 PORT="${2:-8501}"
 DASHBOARD_SIF="${3:-${PROJECT_DIR}/tools/asvflow-dashboard.sif}"
-DASHBOARD_BIND_ADDRESS="${DASHBOARD_BIND_ADDRESS:-}"
-if [ -z "${DASHBOARD_BIND_ADDRESS}" ]; then
-    if command -v tailscale >/dev/null 2>&1; then
-        TAILSCALE_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
-        if [[ "${TAILSCALE_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            DASHBOARD_BIND_ADDRESS="${TAILSCALE_IP}"
-        fi
-    fi
-    DASHBOARD_BIND_ADDRESS="${DASHBOARD_BIND_ADDRESS:-127.0.0.1}"
-fi
+DASHBOARD_BIND_ADDRESS="${DASHBOARD_BIND_ADDRESS:-127.0.0.1}"
 DASHBOARD_SIF_ABS="$(cd "$(dirname "${DASHBOARD_SIF}")" && pwd)/$(basename "${DASHBOARD_SIF}")"
 if command -v apptainer >/dev/null 2>&1; then
     CONTAINER_RUNTIME="$(command -v apptainer)"
