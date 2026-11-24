@@ -6,7 +6,7 @@ ASVFlow is a DSL2 Nextflow workflow for paired-end amplicon sequencing. It runs 
 
 FastQC and MultiQC run on raw reads and again after the primer-trimming stage. Primer removal defaults to paired Cutadapt primers; set `--primer_mode none` to skip it. DADA2 runs by default and performs quality profiling, filtering, error learning, dereplication, inference, paired-read merging, sequence-table construction, and chimera removal.
 
-Taxonomy is off by default. `--run_taxonomy true` assigns taxonomy with DADA2's classifier and a SILVA reference. Species-level addition is a separate opt-in (`--taxonomy_add_species true`) and requires its SILVA species reference. SILVA versions `144` and `138.1` have automatic filenames; other versions require explicit reference paths.
+Taxonomy is off by default. `--run_taxonomy true` assigns taxonomy with DADA2's classifier and a SILVA reference. Species-level addition is a separate opt-in (`--taxonomy_add_species true`) and requires its SILVA species reference. SILVA versions `144` and `138.1` have automatic filenames; other versions require explicit reference paths. Species assignment needs exact matches to the reference, so ASVs that still contain primer bases (e.g. with `--primer_mode none`) will not match; the step is slow and may assign few or no species.
 
 Community analysis is off by default and requires DADA2. When enabled, alpha diversity, beta diversity (Bray-Curtis and Jaccard), and sequencing-depth outputs are generated. Taxonomic composition is generated only when an internal or external taxonomy table is available. PERMANOVA is generated only when sample metadata is supplied. An external taxonomy table can be supplied using `--taxonomy_table`.
 
@@ -112,6 +112,7 @@ nextflow run main.nf -resume --sample_sheet samplesheet.csv --primer_mode none -
 | `--dada2_trunc_len_f`, `--dada2_trunc_len_r` | `0`, `0` | Fixed truncation lengths; zero disables fixed-length truncation |
 | `--dada2_max_ee_f`, `--dada2_max_ee_r` | `2.0`, `2.0` | Maximum expected errors |
 | `--dada2_trunc_q`, `--dada2_max_n`, `--dada2_min_len`, `--dada2_rm_phix` | `2`, `0`, `50`, `true` | DADA2 filter settings |
+| `--dada2_rm_lowcomplex` | `0` | Remove reads with Shannon complexity below this value; 0 disables. A value of 2 removes poly-G reads |
 | `--dada2_learn_nbases`, `--dada2_pool` | `1000000`, `false` | Error learning and pooling (`false`, `true`, or `pseudo`) |
 | `--dada2_min_overlap`, `--dada2_max_mismatch` | `12`, `0` | Paired-read merge settings |
 | `--dada2_chimera_method` | `consensus` | Chimera method (`consensus`, `pooled`, `per-sample`) |
@@ -125,6 +126,10 @@ nextflow run main.nf -resume --sample_sheet samplesheet.csv --primer_mode none -
 | `--enable_dashboard`, `--dashboard_port`, `--dashboard_bind_address` | `false`, `8501`, unset | Launch dashboard; bind address defaults to Tailscale IPv4 if available, otherwise loopback |
 
 The Nextflow configuration enables Singularity-compatible container execution with auto mounts and sets per-process CPU, memory, retry and time limits. Trace, report and timeline artifacts are enabled under `<outdir>/.asvflow_dashboard/artifacts/<invocation-id>/`.
+
+### Troubleshooting
+
+`learnErrors` failing with "Error rates could not be estimated" / "Error matrix is NULL" does not always mean too few reads. A possible cause is poly-G reads (no primer) in R2. Fixes: run with `--primer_mode paired` and both primers (reads without primers are discarded by default, `--discard_untrimmed true`), or set `--dada2_rm_lowcomplex 2`.
 
 ## ASVFlow Live dashboard
 
