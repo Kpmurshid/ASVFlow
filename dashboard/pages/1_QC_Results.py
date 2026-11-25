@@ -10,9 +10,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.navigation import render_sidebar_navigation
 from components.presentation import render_page_header, section_heading
 
-st.set_page_config(page_title="QC Results", page_icon="🔬", layout="wide")
+st.set_page_config(page_title="QC Results", layout="wide")
 render_sidebar_navigation()
-render_page_header("Quality Control", "Review run-level summaries and inspect read quality sample by sample.", "🔬")
+render_page_header("Quality Control", "Review run-level summaries and inspect read quality sample by sample.", "microscope")
 
 if "scanner" not in st.session_state or st.session_state.scanner is None:
     st.error("No run selected. Please go to the Home page and select a run.")
@@ -20,7 +20,7 @@ if "scanner" not in st.session_state or st.session_state.scanner is None:
 
 scanner = st.session_state.scanner
 outputs = scanner.scan_available_outputs()
-tab1, tab2 = st.tabs(["📊 MultiQC Reports", "📈 Individual FastQC"])
+tab1, tab2 = st.tabs(["MultiQC Reports", "Individual FastQC"])
 
 with tab1:
     section_heading("MultiQC reports", "Aggregated quality summaries for raw and trimmed reads.")
@@ -28,7 +28,7 @@ with tab1:
     trimmed_report = outputs["qc"].get("trimmed_multiqc")
     choices = ["Raw Reads", "Trimmed Reads"]
     report_type = st.radio("Report", choices, horizontal=True, key="multiqc_selector",
-                           format_func=lambda x: f"{'●' if (raw_report if x == 'Raw Reads' else trimmed_report) else '○'}  {x}")
+                           format_func=lambda x: f"{'Available' if (raw_report if x == 'Raw Reads' else trimmed_report) else 'Pending'} · {x}")
     report_path = raw_report if report_type == "Raw Reads" else trimmed_report
     status_col, detail_col = st.columns([1, 3])
     with status_col:
@@ -43,7 +43,7 @@ with tab1:
         try:
             html_content = report_path.read_text(encoding="utf-8")
             components.html(html_content, height=740, scrolling=True)
-            st.download_button(f"📥 Download {report_type} MultiQC report", html_content,
+            st.download_button(f" Download {report_type} MultiQC report", html_content,
                                f"{report_type.split()[0].lower()}_multiqc_report.html", "text/html")
         except (OSError, UnicodeError) as error:
             st.info(f"The report is being written or could not be read yet: {error}")

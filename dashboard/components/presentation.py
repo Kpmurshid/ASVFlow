@@ -1,6 +1,7 @@
 """Reusable presentation helpers for scientific results pages."""
 
 import streamlit as st
+from components.icons import icon_svg
 
 
 PALETTE = ["#087e8b", "#2878d0", "#7456b8", "#13a58a", "#d58a27", "#d65363", "#607d8b"]
@@ -9,7 +10,7 @@ PALETTE = ["#087e8b", "#2878d0", "#7456b8", "#13a58a", "#d58a27", "#d65363", "#6
 def render_page_header(title: str, subtitle: str, icon: str) -> None:
     """Render a compact results header on the shared light canvas."""
     st.markdown(
-        f'<div class="asv-page-header"><div class="asv-page-icon">{icon}</div>'
+        f'<div class="asv-page-header"><div class="asv-page-icon">{icon_svg(icon, 26, "#087e8b")}</div>'
         f'<div><div class="asv-page-kicker">ASVFLOW LIVE · RESULTS</div>'
         f'<h1>{title}</h1><p>{subtitle}</p></div></div>',
         unsafe_allow_html=True,
@@ -43,8 +44,9 @@ def apply_page_css() -> None:
     .asv-page-header { display:flex; align-items:center; gap:1rem; padding:.35rem 0 1.1rem;
       margin-bottom:.65rem; border-bottom:1px solid #dce7ee; }
     .asv-page-icon { width:3.25rem; height:3.25rem; display:grid; place-items:center;
-      border-radius:13px; background:linear-gradient(145deg,#e1f5f7,#e7f0fb); font-size:1.65rem;
+      border-radius:13px; background:linear-gradient(145deg,#e1f5f7,#e7f0fb);
       box-shadow:inset 0 0 0 1px #d2e8ed; }
+    .asv-page-icon svg {{ display:block; }}
     .asv-page-kicker { color:#087e8b; font-size:.67rem; font-weight:750; letter-spacing:.13em; }
     .asv-page-header h1 { margin:.12rem 0 .15rem; font-size:1.85rem; line-height:1.15; }
     .asv-page-header p { color:#64798c; margin:0; font-size:.92rem; }

@@ -11,15 +11,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.navigation import render_sidebar_navigation
 from components.presentation import render_page_header, section_heading, style_figure
 
-st.set_page_config(page_title="DADA2 Results", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="DADA2 Results", layout="wide")
 render_sidebar_navigation()
-render_page_header("DADA2 Processing", "Follow read retention, inspect chimera filtering, and explore the final ASV table.", "🧬")
+render_page_header("DADA2 Processing", "Follow read retention, inspect chimera filtering, and explore the final ASV table.", "dna")
 if "scanner" not in st.session_state or st.session_state.scanner is None:
     st.error("No run selected. Please go to the Home page and select a run.")
     st.stop()
 scanner = st.session_state.scanner
 
-tab1, tab2, tab3 = st.tabs(["📊 Read Tracking", "🔬 Chimera Stats", "🧬 ASV Table"])
+tab1, tab2, tab3 = st.tabs(["Read Tracking", "Chimera Stats", "ASV Table"])
 
 with tab1:
     section_heading("Read tracking", "Per-sample read counts emitted by DADA2 at each available processing stage.")
@@ -100,6 +100,6 @@ with tab3:
         with right:
             st.caption(f"Showing {len(display_df):,} ASVs × {len(display_df.columns):,} samples")
             st.dataframe(display_df, use_container_width=True, height=460)
-        st.download_button("📥 Download full ASV table", seqtab_df.to_csv(), "seqtab_nochim.csv", "text/csv")
+        st.download_button(" Download full ASV table", seqtab_df.to_csv(), "seqtab_nochim.csv", "text/csv")
     else:
         st.info(scanner.artifact_status_message("dada2", "seqtab", "DADA2 ASV table"))

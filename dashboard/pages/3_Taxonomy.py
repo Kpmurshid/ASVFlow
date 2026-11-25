@@ -11,14 +11,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.navigation import render_sidebar_navigation
 from components.presentation import render_page_header, section_heading, style_figure
 
-st.set_page_config(page_title="Taxonomy", page_icon="🦠", layout="wide")
+st.set_page_config(page_title="Taxonomy", layout="wide")
 render_sidebar_navigation()
-render_page_header("Taxonomic Classification", "Explore assignments by rank and compare taxon abundance across samples.", "🦠")
+render_page_header("Taxonomic Classification", "Explore assignments by rank and compare taxon abundance across samples.", "tags")
 if "scanner" not in st.session_state or st.session_state.scanner is None:
     st.error("No run selected. Go to Home page.")
     st.stop()
 scanner = st.session_state.scanner
-tab1, tab2, tab3 = st.tabs(["📊 Overview", "🔬 Taxonomy Table", "📈 Composition"])
+tab1, tab2, tab3 = st.tabs(["Overview", "Taxonomy Table", "Composition"])
 
 with tab1:
     section_heading("Assignment overview", "Classification totals are read from the pipeline taxonomy statistics.")
@@ -68,7 +68,7 @@ with tab2:
             display = display[mask]
         st.caption(f"Showing {len(display):,} of {len(tax_df):,} assignments")
         st.dataframe(display, use_container_width=True, height=480, hide_index=True)
-        st.download_button("📥 Download taxonomy table", tax_df.to_csv(index=False), "taxonomy.csv", "text/csv")
+        st.download_button(" Download taxonomy table", tax_df.to_csv(index=False), "taxonomy.csv", "text/csv")
     else:
         st.info(scanner.artifact_status_message("taxonomy", "taxonomy_table", "Taxonomy table"))
 
@@ -109,7 +109,7 @@ with tab3:
         fig.update_xaxes(tickangle=-35)
         st.plotly_chart(style_figure(fig, 440), use_container_width=True)
         st.dataframe(shown.sort_index(), use_container_width=True, height=380)
-        st.download_button("📥 Download composition table", shown.to_csv(), f"composition_{rank.lower()}_{'relabund' if relative else 'counts'}.csv", "text/csv")
+        st.download_button(" Download composition table", shown.to_csv(), f"composition_{rank.lower()}_{'relabund' if relative else 'counts'}.csv", "text/csv")
     else:
         if tax_df is None:
             st.info(scanner.artifact_status_message("taxonomy", "taxonomy_table", "Taxonomy table required for composition"))

@@ -243,14 +243,14 @@ def render(monitor, scanner, run_info: Dict):
         if output_stats['qc_available']:
             st.markdown("""
             <div class="output-card output-available">
-                <div>✓</div>
+                <div>Available</div>
                 <div style="flex: 1;"><strong>QC Reports</strong></div>
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown("""
             <div class="output-card output-pending">
-                <div>○</div>
+                <div>Pending</div>
                 <div style="flex: 1;">QC Reports</div>
             </div>
             """, unsafe_allow_html=True)
@@ -259,14 +259,14 @@ def render(monitor, scanner, run_info: Dict):
         if output_stats['dada2_available']:
             st.markdown("""
             <div class="output-card output-available">
-                <div>✓</div>
+                <div>Available</div>
                 <div style="flex: 1;"><strong>DADA2 Results</strong></div>
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown("""
             <div class="output-card output-pending">
-                <div>○</div>
+                <div>Pending</div>
                 <div style="flex: 1;">DADA2 Results</div>
             </div>
             """, unsafe_allow_html=True)
@@ -276,14 +276,14 @@ def render(monitor, scanner, run_info: Dict):
         if output_stats['taxonomy_available']:
             st.markdown("""
             <div class="output-card output-available">
-                <div>✓</div>
+                <div>Available</div>
                 <div style="flex: 1;"><strong>Taxonomy Assignment</strong></div>
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown("""
             <div class="output-card output-pending">
-                <div>○</div>
+                <div>Pending</div>
                 <div style="flex: 1;">Taxonomy Assignment</div>
             </div>
             """, unsafe_allow_html=True)
@@ -292,14 +292,14 @@ def render(monitor, scanner, run_info: Dict):
         if output_stats['community_available']:
             st.markdown("""
             <div class="output-card output-available">
-                <div>✓</div>
+                <div>Available</div>
                 <div style="flex: 1;"><strong>Community Analysis</strong></div>
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown("""
             <div class="output-card output-pending">
-                <div>○</div>
+                <div>Pending</div>
                 <div style="flex: 1;">Community Analysis <em>(optional)</em></div>
             </div>
             """, unsafe_allow_html=True)

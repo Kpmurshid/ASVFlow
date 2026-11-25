@@ -11,9 +11,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.navigation import render_sidebar_navigation
 from components.presentation import render_page_header, section_heading, style_figure
 
-st.set_page_config(page_title="Sample Explorer", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="Sample Explorer", layout="wide")
 render_sidebar_navigation()
-render_page_header("Sample Explorer", "Inspect one sample at a time across its abundance, taxonomy, and diversity results.", "🔍")
+render_page_header("Sample Explorer", "Inspect one sample at a time across its abundance, taxonomy, and diversity results.", "search")
 if "scanner" not in st.session_state or st.session_state.scanner is None:
     st.error("No run selected. Go to Home page.")
     st.stop()
@@ -39,7 +39,7 @@ with c2: st.metric("Total reads", f"{total_reads:,}")
 with c3: st.metric("ASVs detected", f"{len(positive):,}")
 with c4: st.metric("Top 10 ASVs", f"{positive.head(10).sum() / total_reads * 100:.1f}%" if total_reads else "—")
 
-tab1, tab2, tab3 = st.tabs(["🧬 ASV Abundance", "🦠 Taxonomy", "📊 Sample Context"])
+tab1, tab2, tab3 = st.tabs(["ASV Abundance", "Taxonomy", "Sample Context"])
 with tab1:
     section_heading("ASV abundance", "Abundance distribution for this sample.")
     if not positive.empty:

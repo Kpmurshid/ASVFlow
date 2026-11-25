@@ -12,6 +12,7 @@ from pathlib import Path
 import time
 from html import escape
 import streamlit.components.v1 as components
+from components.icons import icon_data_uri, icon_svg
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -51,7 +52,6 @@ def main():
     # Page configuration
     st.set_page_config(
         page_title="ASVFlow Live",
-        page_icon="🧬",
         layout="wide",
         initial_sidebar_state="expanded"
     )
@@ -83,8 +83,7 @@ def main():
     # Format run options
     run_options = []
     for run in available_runs:
-        icon = {'OK': '✓', 'ERR': '✗', '-': '◌'}.get(run['status'], '?')
-        run_options.append(f"{icon} {run['run_name']} ({run['timestamp']})")
+        run_options.append(f"{run['run_name']} ({run['timestamp']})")
 
     # Run selector with label
     selected_idx = st.sidebar.selectbox(
@@ -125,9 +124,9 @@ def main():
             value=5,
             help="Time between automatic refreshes"
         )
-        st.sidebar.caption(f"⟳ Refreshing every {refresh_interval}s")
+        st.sidebar.caption(f"Refreshing every {refresh_interval}s")
 
-    if st.sidebar.button("🔄 Refresh Now", use_container_width=True, type="secondary"):
+    if st.sidebar.button("Refresh Now", key="refresh_dashboard", use_container_width=True, type="secondary"):
         st.rerun()
 
     # FOOTER
@@ -184,16 +183,16 @@ def main():
         st.caption("Task statuses from this run's execution trace")
         metric_cols = st.columns(4)
         metrics = (
-            ('✓', 'Executed', task_summary['executed'], '#13866e'),
-            ('↻', 'Cached', task_summary['cached'], '#7456b8'),
-            ('!', 'Failed', task_summary['failed'], '#c43d4b' if task_summary['failed'] > 0 else '#8292a0'),
-            ('○', 'Aborted', task_summary['aborted'], '#8292a0'),
+            ('check', 'Executed', task_summary['executed'], '#13866e'),
+            ('refresh', 'Cached', task_summary['cached'], '#7456b8'),
+            ('circle-alert', 'Failed', task_summary['failed'], '#c43d4b' if task_summary['failed'] > 0 else '#8292a0'),
+            ('circle', 'Aborted', task_summary['aborted'], '#8292a0'),
         )
         for col, (icon, label, value, color) in zip(metric_cols, metrics):
             with col:
                 st.markdown(
                     f'<div class="asv-metric-card" style="--metric-accent:{color}">'
-                    f'<div class="asv-metric-label">{icon} &nbsp;{label}</div>'
+                    f'<div class="asv-metric-label">{icon_svg(icon, 15, color)} &nbsp;{label}</div>'
                     f'<div class="asv-metric-value">{value}</div></div>',
                     unsafe_allow_html=True,
                 )
@@ -232,18 +231,18 @@ def main():
 
     st.caption("Navigate to detailed analysis pages")
 
-    def quick_access_card(key, title, description, icon, status, available, page=None, artifact_path=None):
+    def quick_access_card(key, title, description, status, available, page=None, artifact_path=None):
         if available:
-            state, indicator = 'available', '● Available'
+            state, indicator = 'available', 'Available'
         elif status == 'Optional':
-            state, indicator = 'optional', '◌ Optional'
+            state, indicator = 'optional', 'Optional'
         elif status == 'Pending':
-            state, indicator = 'pending', '◷ Pending'
+            state, indicator = 'pending', 'Pending'
         else:
             state = status.lower().replace(' ', '_').replace('/', '_')
-            indicator = f'! {status}'
+            indicator = status
         clicked = st.button(
-            f'{icon}  **{title}**  \n{description}  \n\n{indicator}',
+            f'**{title}**  \n{description}  \n\n{indicator}',
             key=f'quick_access_{key}_{state}',
             use_container_width=True
         )
@@ -258,6 +257,24 @@ def main():
                 st.session_state.quick_access_report_path = None
                 st.session_state.quick_access_report_message = 'No Nextflow report or timeline is available for this run yet.'
                 st.session_state.quick_access_report_run_key = selected_run_key
+
+    quick_access_icons = {
+        'qc': 'microscope', 'dada2': 'dna', 'taxonomy': 'tags',
+        'community': 'chart-no-axes-combined', 'reports': 'file-chart',
+        'sample_explorer': 'search', 'phylogeny': 'git-branch',
+    }
+    icon_styles = [
+        f'[class*="st-key-quick_access_{key}_"] button::before {{ content:""; width:1.25rem; '
+        f'height:1.25rem; flex:none; margin:0 .5rem .1rem 0; background-color:#087e8b; '
+        f'-webkit-mask:{icon_data_uri(icon)} center/contain no-repeat; mask:{icon_data_uri(icon)} center/contain no-repeat; }}'
+        for key, icon in quick_access_icons.items()
+    ]
+    icon_styles.append(
+        f'.st-key-refresh_dashboard button::before {{ content:""; width:1rem; height:1rem; '
+        f'margin-right:.45rem; background-color:currentColor; -webkit-mask:{icon_data_uri("refresh")} center/contain no-repeat; '
+        f'mask:{icon_data_uri("refresh")} center/contain no-repeat; }}'
+    )
+    st.markdown(f'<style>{"".join(icon_styles)}</style>', unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns(3)
 
@@ -276,20 +293,20 @@ def main():
 
     with col1:
         quick_access_card(
-            'qc', 'QC Results', 'Read QC and quality metrics', '🔬', qc_status,
-            bool(outputs.get('qc', {}).get('raw_multiqc')), page='1_🔬_QC_Results.py'
+            'qc', 'QC Results', 'Read QC and quality metrics', qc_status,
+            bool(outputs.get('qc', {}).get('raw_multiqc')), page='1_QC_Results.py'
         )
 
     with col2:
         quick_access_card(
-            'dada2', 'DADA2 Results', 'ASV inference, filtering and denoising', '🧬', seqtab_status,
-            bool(outputs.get('dada2', {}).get('seqtab')), page='2_🧬_DADA2_Results.py'
+            'dada2', 'DADA2 Results', 'ASV inference, filtering and denoising', seqtab_status,
+            bool(outputs.get('dada2', {}).get('seqtab')), page='2_DADA2_Results.py'
         )
 
     with col3:
         quick_access_card(
-            'taxonomy', 'Taxonomy', 'Taxonomic assignment and abundance', '🦠', taxonomy_status,
-            bool(outputs.get('taxonomy', {}).get('taxonomy_table')), page='3_🦠_Taxonomy.py'
+            'taxonomy', 'Taxonomy', 'Taxonomic assignment and abundance', taxonomy_status,
+            bool(outputs.get('taxonomy', {}).get('taxonomy_table')), page='3_Taxonomy.py'
         )
 
     st.markdown("")  # Spacing
@@ -299,9 +316,8 @@ def main():
 
     with col4:
         quick_access_card(
-            'community', 'Community Analysis', 'Diversity and community composition', '📊',
-            community_status,
-            bool(outputs.get('community', {}).get('alpha_diversity')), page='4_📊_Community_Analysis.py'
+            'community', 'Community Analysis', 'Diversity and community composition', community_status,
+            bool(outputs.get('community', {}).get('alpha_diversity')), page='4_Community_Analysis.py'
         )
 
     with col5:
@@ -313,15 +329,14 @@ def main():
         report_outputs = outputs.get('reports', {})
         report_path = report_outputs.get('execution_report') or report_outputs.get('execution_timeline')
         quick_access_card(
-            'reports', 'Nextflow Reports', 'Execution report and timeline', '📈', reports_status_text, reports_available,
+            'reports', 'Nextflow Reports', 'Execution report and timeline', reports_status_text, reports_available,
             artifact_path=report_path
         )
 
     with col6:
         quick_access_card(
-            'sample_explorer', 'Sample Explorer', 'Explore samples, ASVs and taxonomy', '🔎',
-            seqtab_status,
-            bool(outputs.get('dada2', {}).get('seqtab')), page='5_🔍_Sample_Explorer.py'
+            'sample_explorer', 'Sample Explorer', 'Explore samples, ASVs and taxonomy', seqtab_status,
+            bool(outputs.get('dada2', {}).get('seqtab')), page='5_Sample_Explorer.py'
         )
 
     st.markdown("")  # Spacing
@@ -330,10 +345,9 @@ def main():
     with col7:
         quick_access_card(
             'phylogeny', 'Phylogenetic Analysis',
-            'Explore ASV relationships, taxonomy and evolutionary trees.', '🌳',
-            phylogeny_status,
+            'Explore ASV relationships, taxonomy and evolutionary trees.', phylogeny_status,
             bool(outputs.get('phylogeny', {}).get('tree')),
-            page='6_🌳_Phylogenetic_Analysis.py'
+            page='6_Phylogenetic_Analysis.py'
         )
 
     report_run_key = st.session_state.get('quick_access_report_run_key')

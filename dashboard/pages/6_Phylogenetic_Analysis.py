@@ -17,9 +17,9 @@ def _leaf_nodes(node):
         return [node]
     return [leaf for child in node["children"] for leaf in _leaf_nodes(child)]
 
-st.set_page_config(page_title="Phylogenetic Analysis", page_icon="🌳", layout="wide")
+st.set_page_config(page_title="Phylogenetic Analysis", layout="wide")
 render_sidebar_navigation()
-render_page_header("Phylogenetic Analysis", "Explore ASV relationships, branch distances, and taxonomy annotations.", "🌳")
+render_page_header("Phylogenetic Analysis", "Explore ASV relationships, branch distances, and taxonomy annotations.", "git-branch")
 if "scanner" not in st.session_state or st.session_state.scanner is None:
     st.error("No run selected. Go to Home page.")
     st.stop()
@@ -220,4 +220,4 @@ detail_cols[2].metric("Terminal branch", f"{selected['branch_length']:.6g}")
 detail_cols[3].metric("Root-to-tip distance", f"{selected['distance']:.6g}")
 
 st.download_button("Download Newick", tree_text, "asv_tree.nwk", "text/plain")
-st.caption("Use the chart camera control to export a high-resolution PNG; zoom and pan with the chart tools or scroll wheel.")
+st.caption("Use the camera control to export a high-resolution PNG; zoom and pan with the tools or scroll wheel.")

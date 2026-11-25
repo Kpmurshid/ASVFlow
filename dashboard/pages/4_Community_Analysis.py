@@ -11,9 +11,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.navigation import render_sidebar_navigation
 from components.presentation import render_page_header, section_heading, style_figure
 
-st.set_page_config(page_title="Community Analysis", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Community Analysis", layout="wide")
 render_sidebar_navigation()
-render_page_header("Community Analysis", "Compare within-sample diversity, between-sample structure, and taxonomic composition.", "📊")
+render_page_header("Community Analysis", "Compare within-sample diversity, between-sample structure, and taxonomic composition.", "chart-no-axes-combined")
 if "scanner" not in st.session_state or st.session_state.scanner is None:
     st.error("No run selected. Go to Home page.")
     st.stop()
@@ -29,7 +29,7 @@ if not any(outputs["community"].values()):
         st.info("Community analysis is optional and unavailable for this completed run. Enable it with `--run_community_analysis true` and provide sample metadata.")
     st.stop()
 
-tab1, tab2, tab3 = st.tabs(["📈 Alpha Diversity", "🗺️ Beta Diversity", "🧬 Composition"])
+tab1, tab2, tab3 = st.tabs(["Alpha Diversity", "Beta Diversity", "Composition"])
 
 with tab1:
     section_heading("Alpha diversity", "Per-sample diversity estimates from the pipeline output.")
@@ -55,7 +55,7 @@ with tab1:
             st.info("No valid alpha-diversity measurements are available.")
         with st.expander("Alpha diversity table", expanded=True):
             st.dataframe(alpha, use_container_width=True, hide_index=True)
-        st.download_button("📥 Download alpha diversity", alpha.to_csv(index=False), "alpha_diversity.csv", "text/csv")
+        st.download_button(" Download alpha diversity", alpha.to_csv(index=False), "alpha_diversity.csv", "text/csv")
     else:
         st.info(scanner.artifact_status_message("community", "alpha_diversity", "Alpha diversity"))
 
@@ -103,7 +103,7 @@ with tab2:
                     st.info("PERMANOVA output exists but could not be read.")
             with st.expander("PCoA coordinates", expanded=False):
                 st.dataframe(pcoa, use_container_width=True, hide_index=True)
-            st.download_button(f"📥 Download {metric} PCoA", pcoa.to_csv(index=False), f"pcoa_{key}.csv", "text/csv")
+            st.download_button(f" Download {metric} PCoA", pcoa.to_csv(index=False), f"pcoa_{key}.csv", "text/csv")
         else:
             st.info(f"{metric} coordinates do not contain usable PC1 and PC2 values.")
     else:
@@ -137,7 +137,7 @@ with tab3:
         fig.update_xaxes(tickangle=-35)
         st.plotly_chart(style_figure(fig, 450), use_container_width=True)
         st.dataframe(data, use_container_width=True, height=380)
-        st.download_button(f"📥 Download {rank} {abundance.lower()}", composition.to_csv(), f"composition_{rank_key}_{kind}.csv", "text/csv")
+        st.download_button(f" Download {rank} {abundance.lower()}", composition.to_csv(), f"composition_{rank_key}_{kind}.csv", "text/csv")
     else:
         artifact_key = f"comp_{rank_key}_{kind}"
         st.info(scanner.artifact_status_message("community", artifact_key, f"{rank} {abundance.lower()} output"))
