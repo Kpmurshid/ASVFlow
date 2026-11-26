@@ -199,7 +199,7 @@ def argv_for(task):
 
 def is_runtime_parent_title(task):
     argv = argv_for(task)
-    return len(argv) == 1 and re.fullmatch(r"(?:Apptainer|Singularity) runtime parent: .+", argv[0]) is not None
+    return len(argv) == 1 and re.fullmatch(r"(?:Apptainer|Singularity) runtime parent(?:: .+)?", argv[0]) is not None
 
 
 def normalized_dashboard_cmdline_hash(task, outdir):
@@ -311,7 +311,7 @@ def is_verified_launcher(task, project, port, outdir):
     runtime_marker = executable in runtime_names or argv0 in runtime_names
     runtime_parent = (
         is_runtime_parent_title(task)
-        and (executable in ("starter", "starter-suid") or identity["exe_state"] == "inaccessible")
+        and (executable in ("starter", "starter-suid") or task["exe_state"] == "inaccessible")
     )
     return (
         (runtime_marker and "exec" in argv and has_dashboard_command(task, project, port, outdir))
@@ -791,7 +791,8 @@ def leader_matches(task):
     argv = argv_for(task)
     executable = os.path.basename(task["exe"] or "")
     runtime_parent = (
-        executable in ("starter", "starter-suid") and is_runtime_parent_title(task)
+        is_runtime_parent_title(task)
+        and (executable in ("starter", "starter-suid") or identity["exe_state"] == "inaccessible")
     )
     recorded_runtime = os.path.basename(identity["exe"] or "")
     verified_exec_transition = (

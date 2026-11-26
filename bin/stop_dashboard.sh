@@ -120,7 +120,7 @@ def argv_for(task):
 
 def is_runtime_parent_title(task):
     argv = argv_for(task)
-    return len(argv) == 1 and re.fullmatch(r"(?:Apptainer|Singularity) runtime parent: .+", argv[0]) is not None
+    return len(argv) == 1 and re.fullmatch(r"(?:Apptainer|Singularity) runtime parent(?:: .+)?", argv[0]) is not None
 
 
 def normalized_dashboard_cmdline_hash(task, outdir):

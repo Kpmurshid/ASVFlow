@@ -241,6 +241,35 @@ class StarterSuidIdentityTests(unittest.TestCase):
         unrelated = dict(recognized, exe="/tmp/unrelated")
         self.assertFalse(ns["is_verified_launcher"](unrelated, self.project, self.port, self.outdir))
 
+    def test_runtime_parent_titles_accept_both_formats_and_reject_unrelated_titles(self):
+        titles = (
+            b"Apptainer runtime parent\0",
+            b"Apptainer runtime parent: custom-image.sif\0",
+            b"Singularity runtime parent\0",
+            b"Singularity runtime parent: custom-image.sif\0",
+        )
+        rejected_titles = (
+            b"Singularity runtime parent extra\0",
+            b"Unrelated runtime parent\0",
+            b"Singularity runtime parent:\0",
+        )
+        for script in ("launch_dashboard.sh", "stop_dashboard.sh"):
+            ns = helper_functions(script)
+            for title in titles:
+                with self.subTest(script=script, title=title):
+                    task = self.task(exe=None, exe_state="inaccessible", cmdline=title)
+                    self.assertTrue(ns["is_runtime_parent_title"](task))
+                    self.assertTrue(self.matches(ns, task))
+                    if script == "launch_dashboard.sh":
+                        self.assertTrue(ns["is_verified_launcher"](task, self.project, self.port, self.outdir))
+            for title in rejected_titles:
+                with self.subTest(script=script, title=title):
+                    task = self.task(exe=None, exe_state="inaccessible", cmdline=title)
+                    self.assertFalse(ns["is_runtime_parent_title"](task))
+                    self.assertFalse(self.matches(ns, task))
+                    if script == "launch_dashboard.sh":
+                        self.assertFalse(ns["is_verified_launcher"](task, self.project, self.port, self.outdir))
+
     def test_apptainer_starter_title_mutation_is_accepted_only_for_exact_title(self):
         original = b"/usr/bin/apptainer\0exec\0dashboard.sif\0streamlit\0run\0"
         titled = b"Apptainer runtime parent: asvflow-dashboard.sif\0"
