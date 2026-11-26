@@ -9,6 +9,7 @@ import streamlit.components.v1 as components
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from components.navigation import render_sidebar_navigation
 from components.presentation import render_page_header, section_heading
+from components.privacy import sanitize_local_paths
 
 st.set_page_config(page_title="QC Results", layout="wide")
 render_sidebar_navigation()
@@ -41,9 +42,10 @@ with tab1:
         st.caption(f"Selected report: {report_path.name}" if report_path else f"No {report_type.lower()} MultiQC report was found for this run.")
     if report_path:
         try:
-            html_content = report_path.read_text(encoding="utf-8")
-            components.html(html_content, height=740, scrolling=True)
-            st.download_button(f" Download {report_type} MultiQC report", html_content,
+            report_html = report_path.read_text(encoding="utf-8")
+            display_html = sanitize_local_paths(report_html, st.session_state.project_dir)
+            components.html(display_html, height=740, scrolling=True)
+            st.download_button(f" Download {report_type} MultiQC report", report_html,
                                f"{report_type.split()[0].lower()}_multiqc_report.html", "text/html")
         except (OSError, UnicodeError) as error:
             st.info(f"The report is being written or could not be read yet: {error}")

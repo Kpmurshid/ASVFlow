@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from parsers import NextflowMonitor, OutputScanner
 from components.navigation import render_sidebar_navigation
 from components.theme import render_home_header
+from components.privacy import display_path, sanitize_local_paths
 
 ASVFLOW_VERSION = "1.0.0"
 
@@ -223,8 +224,9 @@ def main():
         st.info(trace_messages.get(trace_status, 'Task metrics are missing for this invocation.'))
 
     with st.expander("View Run Command"):
-        st.code(selected_run['command'], language='bash')
-    st.markdown(f'<div style="margin:.55rem 0 1rem;color:#64798c;font-size:.82rem">Output Directory</div><div style="font: .82rem ui-monospace,monospace;overflow-wrap:anywhere;background:#edf4f7;padding:.8rem 1rem;border-radius:8px;color:#29465d">{escape(str(outdir))}</div>', unsafe_allow_html=True)
+        st.code(sanitize_local_paths(selected_run['command'], project_dir), language='bash')
+    shown_outdir = display_path(outdir, project_dir)
+    st.markdown(f'<div style="margin:.55rem 0 1rem;color:#64798c;font-size:.82rem">Output Directory</div><div style="font: .82rem ui-monospace,monospace;overflow-wrap:anywhere;background:#edf4f7;padding:.8rem 1rem;border-radius:8px;color:#29465d">{escape(shown_outdir)}</div>', unsafe_allow_html=True)
 
     # QUICK ACCESS SECTION
     st.markdown('<div class="asv-section">Quick Access</div>', unsafe_allow_html=True)
@@ -358,7 +360,8 @@ def main():
     if report_path:
         st.markdown("### Nextflow Report Preview")
         try:
-            components.html(Path(report_path).read_text(encoding='utf-8'), height=800, scrolling=True)
+            report_html = Path(report_path).read_text(encoding='utf-8')
+            components.html(sanitize_local_paths(report_html, project_dir), height=800, scrolling=True)
         except OSError as error:
             st.warning(f"Unable to open this report artifact: {error}")
     elif report_run_key == selected_run_key and st.session_state.get('quick_access_report_message'):

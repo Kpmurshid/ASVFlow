@@ -6,6 +6,7 @@ Modern, polished scientific bioinformatics dashboard design
 import streamlit as st
 import plotly.graph_objects as go
 from typing import Dict
+from components.privacy import display_path, sanitize_local_paths
 
 
 def _render_custom_css():
@@ -309,8 +310,8 @@ def render(monitor, scanner, run_info: Dict):
     # ADDITIONAL INFORMATION
     # Run command
     with st.expander("View Run Command"):
-        st.code(run_info['command'], language='bash')
+        st.code(sanitize_local_paths(run_info['command'], monitor.project_dir), language='bash')
 
     # Output directory
     outdir = monitor.get_run_outdir(run_info)
-    st.caption(f"Output Directory: `{outdir}`")
+    st.caption(f"Output Directory: `{display_path(outdir, monitor.project_dir)}`")

@@ -3,6 +3,7 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -68,28 +69,65 @@ with tab2:
     key = options[metric]
     pcoa = scanner.get_beta_diversity_pcoa(metric=key)
     if pcoa is not None:
-        coordinate_cols = [c for c in ["PC1", "PC2"] if c in pcoa]
-        valid = pcoa.dropna(subset=coordinate_cols) if coordinate_cols else pcoa.copy()
-        if {"PC1", "PC2"}.issubset(pcoa.columns) and not valid.empty:
-            group_col = "group" if "group" in valid and valid["group"].notna().any() else None
-            fig = px.scatter(valid, x="PC1", y="PC2", color=group_col, hover_name="sample_id" if "sample_id" in valid else None,
-                             text="sample_id" if "sample_id" in valid else None,
-                             title=f"{metric} PCoA", color_discrete_sequence=None)
-            fig.update_traces(marker=dict(size=11, line=dict(width=1, color="white")), textposition="top center")
+        valid_pc1 = pcoa.copy()
+        has_pc1 = "PC1" in valid_pc1
+        if has_pc1:
+            valid_pc1["PC1"] = pd.to_numeric(valid_pc1["PC1"], errors="coerce")
+            valid_pc1 = valid_pc1[np.isfinite(valid_pc1["PC1"])]
+        else:
+            valid_pc1 = valid_pc1.iloc[0:0].copy()
+
+        valid_2d = valid_pc1.copy()
+        has_pc2 = "PC2" in valid_2d
+        if has_pc2:
+            valid_2d["PC2"] = pd.to_numeric(valid_2d["PC2"], errors="coerce")
+            valid_2d = valid_2d[np.isfinite(valid_2d["PC2"])]
+
+        if not valid_pc1.empty:
+            group_col = "group" if "group" in valid_pc1 and valid_pc1["group"].notna().any() else None
             stats_path = Path(scanner.outdir) / "community" / ("beta_diversity_phylogenetic_stats.tsv" if "unifrac" in key else "beta_diversity_stats.tsv")
+            axis_labels = {1: "PC1", 2: "PC2"}
             if stats_path.is_file():
                 try:
                     stats = pd.read_csv(stats_path, sep="\t")
                     stat_metric = key if "unifrac" in key else metric
-                    row1 = stats[(stats["metric"] == stat_metric) & (stats["PC"] == 1)]
-                    row2 = stats[(stats["metric"] == stat_metric) & (stats["PC"] == 2)]
-                    xlab = f"PC1 ({float(row1.iloc[0]['variance_explained']):.1f}%)" if not row1.empty else "PC1"
-                    ylab = f"PC2 ({float(row2.iloc[0]['variance_explained']):.1f}%)" if not row2.empty else "PC2"
-                    fig.update_xaxes(title=xlab); fig.update_yaxes(title=ylab)
+                    for axis, label in axis_labels.items():
+                        rows = stats[
+                            (stats["metric"] == stat_metric)
+                            & (pd.to_numeric(stats["PC"], errors="coerce") == axis)
+                        ]
+                        if not rows.empty:
+                            variance = pd.to_numeric(rows.iloc[0]["variance_explained"], errors="coerce")
+                            if pd.notna(variance):
+                                axis_labels[axis] = f"{label} ({float(variance):.1f}%)"
                 except (OSError, ValueError, KeyError, IndexError, TypeError):
-                    fig.update_xaxes(title="PC1"); fig.update_yaxes(title="PC2")
+                    pass
+
+            if not valid_2d.empty and has_pc2:
+                valid_2d = valid_2d.copy()
+                group_col_2d = "group" if "group" in valid_2d and valid_2d["group"].notna().any() else None
+                fig = px.scatter(valid_2d, x="PC1", y="PC2", color=group_col_2d,
+                                 hover_name="sample_id" if "sample_id" in valid_2d else None,
+                                 text="sample_id" if "sample_id" in valid_2d else None,
+                                 title=f"{metric} PCoA", color_discrete_sequence=None)
+                fig.update_traces(marker=dict(size=11, line=dict(width=1, color="white")), textposition="top center")
+                fig.update_xaxes(title=axis_labels[1])
+                fig.update_yaxes(title=axis_labels[2])
             else:
-                fig.update_xaxes(title="PC1"); fig.update_yaxes(title="PC2")
+                fig = px.strip(valid_pc1, x="PC1", y=group_col, color=group_col,
+                               hover_name="sample_id" if "sample_id" in valid_pc1 else None,
+                               title=f"{metric} PCoA (one-dimensional)",
+                               color_discrete_sequence=None)
+                fig.update_traces(jitter=0.18, marker=dict(size=11, line=dict(width=1, color="white")))
+                variance_label = axis_labels[1].replace("%)", "% variance explained)")
+                if variance_label == axis_labels[1] and "(" not in axis_labels[1]:
+                    variance_label = f"{axis_labels[1]} (variance explained unavailable)"
+                fig.update_xaxes(title=variance_label)
+                if group_col:
+                    fig.update_yaxes(title="Group")
+                else:
+                    fig.update_yaxes(title="", showticklabels=False, zeroline=False)
+
             st.plotly_chart(style_figure(fig, 500), use_container_width=True)
             # Display PERMANOVA only when the corresponding analysis output exists.
             perm_path = Path(scanner.outdir) / "community" / f"permanova_{key}.tsv"
