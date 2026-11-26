@@ -103,7 +103,7 @@ class Lifecycle(unittest.TestCase):
         self.case = pathlib.Path(tempfile.mkdtemp(prefix="case-", dir=self.tmp))
         self.state = self.case / "state"
         self.env = os.environ.copy()
-        self.env.update({"ASVFLOW_STATE_DIR": str(self.state), "PATH": f"{self.bin}:{self.env['PATH']}", "FIXTURE_CHILD": str(self.bin / "python3.11"), "DASHBOARD_BIND_ADDRESS": "127.0.0.1"})
+        self.env.update({"ASVFLOW_STATE_DIR": str(self.state), "PATH": f"{self.bin}:{self.env['PATH']}", "FIXTURE_CHILD": str(self.bin / "python3.11"), "DASHBOARD_BIND_ADDRESS": "127.0.0.1", "APPTAINER_CONTAINER": str(self.tmp / "asvflow-dashboard.sif"), "APPTAINER_COMMAND": "exec"})
         self.out = self.case / "results"
         self.port = free_port()
 
@@ -208,6 +208,25 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(stopped.returncode, 0, stopped.stdout)
         stopped = self.stop()
         self.assertEqual(stopped.returncode, 0, stopped.stdout)
+
+    def test_legacy_dashboard_is_adopted_and_stopped_only_after_ownership_verification(self):
+        launched = self.launch()
+        self.assertEqual(launched.returncode, 0, launched.stdout)
+        state = self.state_dir()
+        identity_path = state / "dashboard.identity"
+        identity_path.unlink()
+
+        adopted = self.launch()
+        self.assertEqual(adopted.returncode, 0, adopted.stdout)
+        self.assertIn("adopted", adopted.stdout.lower())
+        identity = json.loads(identity_path.read_text())
+        self.assertEqual(identity["version"], 2)
+
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout)
+        self.assertFalse(pathlib.Path(f"/proc/{identity['pid']}").exists())
+        self.assertFalse(pathlib.Path(f"/proc/{identity['child_pid']}").exists())
+        self.assertFalse(port_is_open(self.port))
 
     def test_state_isolated_by_output_directory(self):
         second = self.case / "other"

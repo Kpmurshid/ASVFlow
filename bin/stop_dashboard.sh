@@ -118,6 +118,11 @@ def argv_for(task):
     return [os.fsdecode(arg) for arg in task["cmdline"].split(b"\0") if arg]
 
 
+def is_runtime_parent_title(task):
+    argv = argv_for(task)
+    return len(argv) == 1 and re.fullmatch(r"(?:Apptainer|Singularity) runtime parent: .+", argv[0]) is not None
+
+
 def normalized_dashboard_cmdline_hash(task, outdir):
     argv = argv_for(task)
     if "--outdir" in argv:
@@ -284,16 +289,15 @@ def leader_matches(task):
     argv = argv_for(task)
     executable = os.path.basename(task["exe"] or "")
     runtime_parent = (
-        executable == "starter"
-        and len(argv) == 1
-        and argv[0] == "Apptainer runtime parent: asvflow-dashboard.sif"
+        is_runtime_parent_title(task)
+        and (executable in ("starter", "starter-suid") or identity["exe_state"] == "inaccessible")
     )
     recorded_runtime = os.path.basename(identity["exe"] or "")
     verified_exec_transition = (
         runtime_parent
         and identity["exe_state"] == "readable"
         and task["exe_state"] == "readable"
-        and recorded_runtime in ("apptainer", "singularity")
+        and recorded_runtime in ("apptainer", "singularity", "starter", "starter-suid")
     )
     return bool(
         task
@@ -311,11 +315,11 @@ def leader_matches(task):
         # immutable process and session identity remains verified below.
         and (
             hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
-            or runtime_parent
+            or (runtime_parent and (verified_exec_transition or (task["exe_state"] == identity["exe_state"] and task["exe"] == identity["exe"])))
         )
         and (
             identity["exe_state"] == "inaccessible"
-            or executable in ("singularity", "apptainer", "starter")
+            or executable in ("singularity", "apptainer", "starter", "starter-suid")
         )
         and (
             ("exec" in argv and has_dashboard_command(task, project, port, outdir))
@@ -346,10 +350,10 @@ def same_process_instance(left, right):
 
     def recognized_launcher_cmdline(task):
         return (
-            os.path.basename(task.get("exe") or "") == "starter"
+            os.path.basename(task.get("exe") or "") in ("starter", "starter-suid")
             and (
                 hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
-                or argv_for(task) == ["Apptainer runtime parent: asvflow-dashboard.sif"]
+                or is_runtime_parent_title(task)
             )
         )
 

@@ -137,7 +137,18 @@ def read_task(pid, proc_fd=None, include_environment=False):
         uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
         uid = int(uid_line.split()[1])
         cmdline = read_bytes("cmdline")
-        environ = read_bytes("environ") if include_environment else b""
+        environment_state = "not-read"
+        if include_environment:
+            try:
+                environ = read_bytes("environ")
+                environment_state = "readable"
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EPERM):
+                    raise
+                environ = b""
+                environment_state = "inaccessible"
+        else:
+            environ = b""
         container_env = {}
         for entry in environ.split(b"\0"):
             key, separator, value = entry.partition(b"=")
@@ -169,6 +180,7 @@ def read_task(pid, proc_fd=None, include_environment=False):
             "exe_state": exe_state,
             "cmdline": cmdline,
             "container_env": container_env,
+            "environment_state": environment_state,
         }
     except (FileNotFoundError, ProcessLookupError):
         return None
@@ -183,6 +195,11 @@ def argv_for(task):
     if not task or not task["cmdline"]:
         return []
     return [os.fsdecode(arg) for arg in task["cmdline"].split(b"\0") if arg]
+
+
+def is_runtime_parent_title(task):
+    argv = argv_for(task)
+    return len(argv) == 1 and re.fullmatch(r"(?:Apptainer|Singularity) runtime parent: .+", argv[0]) is not None
 
 
 def normalized_dashboard_cmdline_hash(task, outdir):
@@ -279,23 +296,27 @@ def same_task_snapshot(left, right):
     # Container runtimes may scrub their injected environment after exec; it
     # is checked when classifying the child, while kernel identity and argv
     # remain stable fields for the repeated snapshot.
-    return all(left.get(key) == right.get(key) for key in left if key not in ("state", "container_env"))
+    return all(left.get(key) == right.get(key) for key in left if key not in ("state", "container_env", "environment_state"))
 
 
 def is_verified_launcher(task, project, port, outdir):
     if not task or task["exe_state"] not in ("readable", "inaccessible"):
         return False
     executable = os.path.basename(task["exe"] or "")
-    if task["exe_state"] == "readable" and executable not in ("singularity", "apptainer", "starter"):
+    runtime_names = ("singularity", "apptainer", "starter", "starter-suid")
+    if task["exe_state"] == "readable" and executable not in runtime_names:
         return False
     argv = argv_for(task)
+    argv0 = os.path.basename(argv[0]) if argv else ""
+    runtime_marker = executable in runtime_names or argv0 in runtime_names
     runtime_parent = (
-        executable == "starter"
-        and argv == ["Apptainer runtime parent: asvflow-dashboard.sif"]
+        is_runtime_parent_title(task)
+        and (executable in ("starter", "starter-suid") or identity["exe_state"] == "inaccessible")
     )
     return (
-        ("exec" in argv and has_dashboard_command(task, project, port, outdir))
+        (runtime_marker and "exec" in argv and has_dashboard_command(task, project, port, outdir))
         or runtime_parent
+        or (task["exe_state"] == "inaccessible" and is_runtime_parent_title(task))
     )
 
 
@@ -390,10 +411,6 @@ if action == "create":
             and task["session"] == pgid
             and task["uid"] == os.getuid()
             and task["exe_state"] in ("readable", "inaccessible")
-            and (
-                task["exe_state"] == "inaccessible"
-                or os.path.basename(task["exe"]) in ("singularity", "apptainer", "starter")
-            )
             and is_verified_launcher(task, project, port, outdir)
         ):
             break
@@ -401,8 +418,11 @@ if action == "create":
     else:
         if (
             task
-            and task["exe_state"] == "readable"
-            and os.path.basename(task["exe"]) == "starter"
+            and task["exe_state"] in ("readable", "inaccessible")
+            and (
+                os.path.basename(task["exe"] or "") in ("starter", "starter-suid")
+                or (task["exe_state"] == "inaccessible" and (os.path.basename((argv_for(task) or [""])[0]) in ("starter", "starter-suid") or is_runtime_parent_title(task)))
+            )
         ):
             # Apptainer exposes its starter process as the session leader and
             # places the dashboard command in the verified container child.
@@ -494,8 +514,15 @@ if action == "adopt-legacy":
         fail(f"Legacy launcher owner UID {leader['uid']} does not match current UID {os.getuid()}")
     if leader["pgrp"] != pgid or leader["session"] != pgid:
         fail("Legacy launcher is not the recorded process-group and session leader")
-    if leader["exe_state"] != "readable" or os.path.basename(leader["exe"]) not in ("starter", "apptainer", "singularity"):
-        fail(f"Legacy launcher executable is not a readable Apptainer/Singularity runtime: {leader['exe']}")
+    leader_exe = os.path.basename(leader["exe"] or "")
+    leader_argv = argv_for(leader)
+    leader_argv0 = os.path.basename(leader_argv[0]) if leader_argv else ""
+    runtime_names = ("starter", "starter-suid", "apptainer", "singularity")
+    if not (
+        (leader["exe_state"] == "readable" and leader_exe in runtime_names)
+        or (leader["exe_state"] == "inaccessible" and (leader_argv0 in runtime_names or leader_exe in runtime_names or is_runtime_parent_title(leader)))
+    ):
+        fail(f"Legacy launcher is not identifiable as an Apptainer/Singularity runtime: {leader['exe']}")
 
     members = []
     dashboard_pids = []
@@ -552,8 +579,13 @@ if action == "adopt-legacy":
             and "run" in argv[:argv.index(app)]
             and f"--server.port={port}" in argv
             and (outdir_index < 0 or (outdir_index + 1 < len(argv) and argv[outdir_index + 1] == outdir))
-            and container_paths == {expected_container}
-            and task["container_env"].get("APPTAINER_COMMAND", task["container_env"].get("SINGULARITY_COMMAND")) == "exec"
+            and (
+                task["environment_state"] == "inaccessible"
+                or (
+                    container_paths == {expected_container}
+                    and task["container_env"].get("APPTAINER_COMMAND", task["container_env"].get("SINGULARITY_COMMAND")) == "exec"
+                )
+            )
         )
         if not valid_member:
             fail(f"Process {member_pid} shares the legacy session but is not the expected dashboard container child")
@@ -759,16 +791,14 @@ def leader_matches(task):
     argv = argv_for(task)
     executable = os.path.basename(task["exe"] or "")
     runtime_parent = (
-        executable == "starter"
-        and len(argv) == 1
-        and argv[0] == "Apptainer runtime parent: asvflow-dashboard.sif"
+        executable in ("starter", "starter-suid") and is_runtime_parent_title(task)
     )
     recorded_runtime = os.path.basename(identity["exe"] or "")
     verified_exec_transition = (
         runtime_parent
         and identity["exe_state"] == "readable"
         and task["exe_state"] == "readable"
-        and recorded_runtime in ("apptainer", "singularity")
+        and recorded_runtime in ("apptainer", "singularity", "starter", "starter-suid")
     )
     mutable_starter_title = runtime_parent
     return bool(
@@ -787,15 +817,15 @@ def leader_matches(task):
         # immutable process and session identity remains verified below.
         and (
             hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
-            or mutable_starter_title
+            or (mutable_starter_title and (verified_exec_transition or (task["exe_state"] == identity["exe_state"] and task["exe"] == identity["exe"])))
         )
         and (
             identity["exe_state"] == "inaccessible"
-            or executable in ("singularity", "apptainer", "starter")
+            or executable in ("singularity", "apptainer", "starter", "starter-suid")
         )
         and (
             ("exec" in argv and has_dashboard_command(task, project, port, outdir))
-            or mutable_starter_title
+            or (mutable_starter_title and (verified_exec_transition or (task["exe_state"] == identity["exe_state"] and task["exe"] == identity["exe"])))
         )
     )
 
@@ -818,10 +848,10 @@ def same_process_instance(left, right):
 
     def recognized_launcher_cmdline(task):
         return (
-            os.path.basename(task.get("exe") or "") == "starter"
+            os.path.basename(task.get("exe") or "") in ("starter", "starter-suid")
             and (
                 hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
-                or argv_for(task) == ["Apptainer runtime parent: asvflow-dashboard.sif"]
+                or is_runtime_parent_title(task)
             )
         )
 
