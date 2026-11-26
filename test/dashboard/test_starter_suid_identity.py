@@ -26,7 +26,7 @@ def helper_functions(script):
     source = text.split("python3 - \"$@\" <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
     tree = ast.parse(source)
     names = {
-        "read_task", "argv_for", "has_dashboard_command", "leader_matches",
+        "read_task", "argv_for", "normalized_dashboard_cmdline_hash", "has_dashboard_command", "leader_matches",
         "is_dashboard_member", "is_dashboard_executable",
     }
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
@@ -47,6 +47,11 @@ def metadata_validator(script, identity, directory):
         if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name) and target.id == "expected_keys" for target in node.targets)
     )
+    child_keys = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "child_identity_keys" for target in node.targets)
+    )
     guard = next(
         node for node in tree.body
         if isinstance(node, ast.If)
@@ -66,7 +71,7 @@ def metadata_validator(script, identity, directory):
         "port": "8501", "identity_path": str(Path(directory) / "dashboard.identity"),
         "fail": lambda message: (_ for _ in ()).throw(ValueError(message)),
     }
-    module = ast.fix_missing_locations(ast.Module(body=[expected, function], type_ignores=[]))
+    module = ast.fix_missing_locations(ast.Module(body=[expected, child_keys, function], type_ignores=[]))
     exec(compile(module, script, "exec"), namespace)
     namespace["metadata_dir"] = os.stat(directory, follow_symlinks=False)
     return namespace["validate_metadata"]
@@ -153,6 +158,27 @@ class StarterSuidIdentityTests(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertTrue(self.assert_metadata_valid(script, self.valid_identity()))
 
+    def test_version_two_metadata_requires_a_valid_tracked_child(self):
+        for script in ("launch_dashboard.sh", "stop_dashboard.sh"):
+            identity = self.valid_identity()
+            identity.update(
+                version=2,
+                child_pid=424243,
+                child_start_ticks=22345,
+                child_exe="/usr/local/bin/python3.12",
+                child_cmdline_sha256="a" * 64,
+                child_cmdline_normalized_sha256="b" * 64,
+            )
+            self.assertTrue(self.assert_metadata_valid(script, identity), script)
+            for key, value in (
+                ("child_pid", True),
+                ("child_start_ticks", 0),
+                ("child_exe", "python3.12"),
+            ):
+                rejected = dict(identity, **{key: value})
+                with self.subTest(script=script, key=key), self.assertRaises(ValueError):
+                    self.assert_metadata_valid(script, rejected)
+
     def test_starter_suid_inaccessible_executable(self):
         for script in ("launch_dashboard.sh", "stop_dashboard.sh"):
             ns = helper_functions(script)
@@ -171,6 +197,28 @@ class StarterSuidIdentityTests(unittest.TestCase):
         for script in ("launch_dashboard.sh", "stop_dashboard.sh"):
             ns = helper_functions(script)
             self.assertTrue(self.matches(ns, task), script)
+
+    def test_apptainer_starter_title_mutation_is_accepted_only_for_exact_title(self):
+        original = b"/usr/bin/apptainer\0exec\0dashboard.sif\0streamlit\0run\0"
+        titled = b"Apptainer runtime parent: asvflow-dashboard.sif\0"
+        for script in ("launch_dashboard.sh", "stop_dashboard.sh"):
+            ns = helper_functions(script)
+            task = self.task(exe="/usr/libexec/apptainer/bin/starter", cmdline=titled)
+            ns.update({
+                "pid": self.pid, "pgid": self.pgid, "port": self.port,
+                "project": self.project, "outdir": self.outdir,
+                "identity": {
+                    "uid": os.getuid(), "start_ticks": 12345,
+                    "exe": "/usr/bin/apptainer", "exe_state": "readable",
+                    "cmdline_sha256": hashlib.sha256(original).hexdigest(),
+                },
+            })
+            self.assertTrue(ns["leader_matches"](task), script)
+            ns["identity"]["exe"] = "/tmp/unrelated"
+            self.assertFalse(ns["leader_matches"](task), script)
+            ns["identity"]["exe"] = "/usr/bin/apptainer"
+            task["cmdline"] = b"Apptainer runtime parent: other-image.sif\0"
+            self.assertFalse(ns["leader_matches"](task), script)
 
     def test_read_task_records_permission_denied_without_losing_process(self):
         ns = helper_functions("launch_dashboard.sh")
@@ -229,6 +277,47 @@ class StarterSuidIdentityTests(unittest.TestCase):
                 dict(accepted, exe="/tmp/unexpected"),
             ):
                 self.assertFalse(ns["is_dashboard_member"](rejected, self.project, self.port, self.outdir, os.getuid(), self.pgid), script)
+
+    def test_streamlit_child_identity_survives_only_known_trailing_argument_removal(self):
+        shortened = (
+            f"/usr/local/bin/python3.12\0/usr/local/bin/streamlit\0run\0"
+            f"{self.project}/dashboard/app.py\0--server.port=8501\0"
+        ).encode()
+        child = {
+            "pid": 424243, "state": "S", "uid": os.getuid(), "ppid": self.pgid,
+            "pgrp": self.pgid, "session": self.pgid, "start_ticks": 99887,
+            "exe": "/usr/local/bin/python3.12", "exe_state": "readable",
+            "cmdline": shortened,
+        }
+        tracked = {
+            "version": 2, "child_pid": 424243, "child_start_ticks": 99887,
+            "child_exe": "/usr/local/bin/python3.12",
+            "child_cmdline_sha256": hashlib.sha256(shortened + b"--\0--outdir\0" + self.outdir.encode() + b"\0").hexdigest(),
+            "child_cmdline_normalized_sha256": hashlib.sha256(shortened).hexdigest(),
+        }
+        for script in ("launch_dashboard.sh", "stop_dashboard.sh"):
+            ns = helper_functions(script)
+            self.assertTrue(ns["is_dashboard_member"](
+                child, self.project, self.port, self.outdir, os.getuid(), self.pgid,
+                tracked, True,
+            ), script)
+            for rejected in (
+                dict(child, pid=424244),
+                dict(child, start_ticks=99888),
+                dict(child, exe="/tmp/python3.12"),
+                dict(child, cmdline=shortened.replace(b"8501", b"8502")),
+                dict(child, cmdline=shortened.replace(b"dashboard/app.py", b"other/app.py")),
+                dict(child, ppid=self.pgid + 1),
+                dict(child, session=self.pgid + 1),
+            ):
+                self.assertFalse(ns["is_dashboard_member"](
+                    rejected, self.project, self.port, self.outdir, os.getuid(), self.pgid,
+                    tracked, True,
+                ), script)
+            self.assertFalse(ns["is_dashboard_member"](
+                child, self.project, self.port, self.outdir, os.getuid(), self.pgid,
+                {"version": 1}, False,
+            ), script)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import urllib.request
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -24,7 +25,7 @@ PARENT_SOURCE = r'''#define _GNU_SOURCE
 #include <sys/wait.h>
 #include <unistd.h>
 static pid_t child;
-static void done(int sig) { if (child > 0) kill(child, SIGTERM); _exit(0); }
+static void done(int sig) { if (child > 0) { kill(child, SIGTERM); waitpid(child, NULL, 0); } _exit(0); }
 int main(int argc, char **argv) {
   char *app = NULL, *port = NULL, *outdir = NULL;
   for (int i=1;i<argc;i++) {
@@ -36,7 +37,14 @@ int main(int argc, char **argv) {
   if (getenv("FIXTURE_FAIL")) return 33;
   signal(SIGTERM, done); signal(SIGINT, done);
   child=fork();
-  if (!child) { execl(getenv("FIXTURE_CHILD"), "python3.11", "run", app, port, "--outdir", outdir, (char*)0); _exit(32); }
+  if (!child) { execl(getenv("FIXTURE_CHILD"), "python3.11", "/usr/local/bin/streamlit", "run", app, port, "--outdir", outdir, (char*)0); _exit(32); }
+  /* Model Apptainer starter replacing its launcher argv after startup. */
+  usleep(500000);
+  char *args_end = argv[0] + strlen(argv[0]);
+  for (int i=1; i<argc; i++) if (argv[i] + strlen(argv[i]) > args_end) args_end = argv[i] + strlen(argv[i]);
+  memset(argv[0], 0, (size_t)(args_end - argv[0]));
+  strcpy(argv[0], "Apptainer runtime parent: asvflow-dashboard.sif");
+  argv[1] = NULL;
   while (waitpid(child, NULL, 0)<0) { }
   return 0;
 }
@@ -55,6 +63,8 @@ int main(int argc, char **argv) {
   int port=0; for(int i=1;i<argc;i++) if(!strncmp(argv[i],"--server.port=",14)) port=atoi(argv[i]+14);
   int fd=socket(AF_INET,SOCK_STREAM,0); struct sockaddr_in a={0}; a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(INADDR_LOOPBACK); a.sin_port=htons(port);
   if(bind(fd,(void*)&a,sizeof(a)) || listen(fd,8)) return 41;
+  /* Model Streamlit consuming its forwarded custom --outdir arguments. */
+  if (argc > 6) { memset(argv[5], 0, strlen(argv[5])); memset(argv[6], 0, strlen(argv[6])); argv[5] = NULL; }
   for (;;) { int c=accept(fd,0,0); if(c>=0) { const char *r="HTTP/1.0 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"; write(c,r,strlen(r)); close(c); } }
 }
 '''
@@ -66,17 +76,24 @@ def free_port():
         return s.getsockname()[1]
 
 
+def port_is_open(port):
+    with socket.socket() as s:
+        s.settimeout(0.25)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
 class Lifecycle(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = pathlib.Path(tempfile.mkdtemp(prefix="asvflow-lifecycle-"))
         cls.bin = cls.tmp / "bin"
         cls.bin.mkdir()
-        for name, source in (("apptainer", PARENT_SOURCE), ("python3.11", CHILD_SOURCE)):
+        for name, source in (("starter", PARENT_SOURCE), ("python3.11", CHILD_SOURCE)):
             src = cls.tmp / f"{name}.c"
             src.write_text(source)
             subprocess.run(["cc", str(src), "-o", str(cls.bin / name)], check=True)
-        (cls.tmp / "dashboard.sif").touch()
+        (cls.bin / "apptainer").symlink_to(cls.bin / "starter")
+        (cls.tmp / "asvflow-dashboard.sif").touch()
 
     @classmethod
     def tearDownClass(cls):
@@ -101,7 +118,7 @@ class Lifecycle(unittest.TestCase):
         return self.state / key
 
     def launch(self, outdir=None, port=None):
-        return subprocess.run([str(LAUNCH), str(outdir or self.out), str(port or self.port), str(self.tmp / "dashboard.sif")], env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        return subprocess.run([str(LAUNCH), str(outdir or self.out), str(port or self.port), str(self.tmp / "asvflow-dashboard.sif")], env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
 
     def stop(self, outdir=None):
         return subprocess.run([str(STOP), str(outdir or self.out)], env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=15)
@@ -111,19 +128,49 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         state = self.state_dir()
         parent = int((state / "dashboard.pid").read_text())
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}", timeout=2) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"ok")
         child = int(subprocess.check_output(["pgrep", "-P", str(parent)], text=True).splitlines()[0])
-        self.assertEqual(os.path.basename(os.readlink(f"/proc/{parent}/exe")), "apptainer")
+        self.assertEqual(os.path.basename(os.readlink(f"/proc/{parent}/exe")), "starter")
         self.assertEqual(os.path.basename(os.readlink(f"/proc/{child}/exe")), "python3.11")
+        identity = json.loads((state / "dashboard.identity").read_text())
+        self.assertEqual(identity["version"], 2)
+        self.assertEqual(identity["child_pid"], child)
+        self.assertNotIn(b"--outdir", pathlib.Path(f"/proc/{child}/cmdline").read_bytes())
         self.assertTrue((self.out / ".asvflow_dashboard").is_symlink())
         self.assertEqual((self.out / ".asvflow_dashboard").resolve(), state)
-        self.assertEqual(self.stop().returncode, 0)
-        self.assertEqual(self.stop().returncode, 0)
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout)
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout)
         self.assertFalse(pathlib.Path(f"/proc/{parent}").exists())
+        self.assertFalse(pathlib.Path(f"/proc/{child}").exists())
+        self.assertFalse(port_is_open(self.port))
+
+    def test_restart_stops_title_changed_launcher_and_starts_new_port(self):
+        first_port = self.port
+        self.assertEqual(self.launch().returncode, 0)
+        state = self.state_dir()
+        first_pid = int((state / "dashboard.pid").read_text())
+        second_port = free_port()
+        result = self.launch(port=second_port)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        second_pid = int((state / "dashboard.pid").read_text())
+        self.assertNotEqual(first_pid, second_pid)
+        self.assertFalse(pathlib.Path(f"/proc/{first_pid}").exists())
+        self.assertFalse(port_is_open(first_port))
+        with urllib.request.urlopen(f"http://127.0.0.1:{second_port}", timeout=2) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"ok")
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout)
 
     def test_deleted_results_still_stops(self):
         self.assertEqual(self.launch().returncode, 0)
         shutil.rmtree(self.out)
-        self.assertEqual(self.stop().returncode, 0)
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout)
 
     def test_legacy_state_migrates_and_compatibility_link_is_restored(self):
         self.out.mkdir()
@@ -135,7 +182,8 @@ class Lifecycle(unittest.TestCase):
         state = self.state_dir()
         self.assertTrue((state / "marker").exists())
         self.assertTrue((self.out / ".asvflow_dashboard").is_symlink())
-        self.assertEqual(self.stop().returncode, 0)
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout)
 
     def test_legacy_directory_is_preserved_when_per_user_state_already_exists(self):
         self.out.mkdir()
@@ -156,8 +204,10 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(archives), 1)
         self.assertEqual((archives[0] / "artifact.html").read_text(), "legacy artifact")
 
-        self.assertEqual(self.stop().returncode, 0)
-        self.assertEqual(self.stop().returncode, 0)
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout)
+        stopped = self.stop()
+        self.assertEqual(stopped.returncode, 0, stopped.stdout)
 
     def test_state_isolated_by_output_directory(self):
         second = self.case / "other"

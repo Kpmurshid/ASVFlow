@@ -93,6 +93,7 @@ def read_task(pid, proc_fd=None):
             exe_state = "inaccessible"
         return {
             "state": fields[0],
+            "pid": pid,
             "ppid": int(fields[1]),
             "pgrp": int(fields[2]),
             "session": int(fields[3]),
@@ -115,6 +116,24 @@ def argv_for(task):
     if not task or not task["cmdline"]:
         return []
     return [os.fsdecode(arg) for arg in task["cmdline"].split(b"\0") if arg]
+
+
+def normalized_dashboard_cmdline_hash(task, outdir):
+    argv = argv_for(task)
+    if "--outdir" in argv:
+        index = argv.index("--outdir")
+        if index + 1 >= len(argv) or argv[index + 1] != outdir:
+            return None
+        if index >= 1 and argv[index - 1] == "--" and index + 2 == len(argv):
+            normalized = argv[:index - 1]
+        elif index + 2 == len(argv):
+            normalized = argv[:index]
+        else:
+            return None
+        payload = b"\0".join(os.fsencode(argument) for argument in normalized) + b"\0"
+        return hashlib.sha256(payload).hexdigest()
+    payload = b"\0".join(os.fsencode(argument) for argument in argv) + (b"\0" if argv else b"")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def has_dashboard_command(task, project, port, outdir):
@@ -140,14 +159,38 @@ def is_dashboard_executable(task):
     ) is not None
 
 
-def is_dashboard_member(task, project, port, outdir, expected_uid, pgid):
+def is_dashboard_member(task, project, port, outdir, expected_uid, pgid, expected_child=None, allow_missing_outdir=False):
     argv = argv_for(task)
     app = os.path.join(project, "dashboard", "app.py")
     try:
         app_index = argv.index(app)
-        outdir_index = argv.index("--outdir")
     except ValueError:
         return False
+    streamlit_indices = [index for index, argument in enumerate(argv) if os.path.basename(argument) == "streamlit"]
+    if not streamlit_indices or not any(index < app_index and "run" in argv[index + 1:app_index] for index in streamlit_indices):
+        return False
+    if "--outdir" in argv:
+        outdir_index = argv.index("--outdir")
+        if outdir_index + 1 >= len(argv) or argv[outdir_index + 1] != outdir:
+            return False
+    elif not allow_missing_outdir:
+        return False
+    if expected_child is not None and expected_child.get("version") == 2:
+        if (
+            task.get("pid") != expected_child.get("child_pid")
+            or task["start_ticks"] != expected_child.get("child_start_ticks")
+            or task["exe"] != expected_child.get("child_exe")
+        ):
+            return False
+        actual_hashes = (
+            hashlib.sha256(task["cmdline"]).hexdigest(),
+            normalized_dashboard_cmdline_hash(task, outdir),
+        )
+        if not any(actual_hash in (
+            expected_child.get("child_cmdline_sha256"),
+            expected_child.get("child_cmdline_normalized_sha256"),
+        ) for actual_hash in actual_hashes):
+            return False
     return (
         task["uid"] == expected_uid
         and task["ppid"] == pgid
@@ -157,8 +200,7 @@ def is_dashboard_member(task, project, port, outdir, expected_uid, pgid):
         and app_index > 0
         and "run" in argv[:app_index]
         and f"--server.port={port}" in argv
-        and outdir_index + 1 < len(argv)
-        and argv[outdir_index + 1] == outdir
+        and ("--outdir" not in argv or argv.index("--outdir") + 1 < len(argv))
     )
 
 
@@ -190,16 +232,22 @@ expected_keys = {
     "version", "pid", "pgid", "uid", "boot_id", "start_ticks", "exe",
     "cmdline_sha256", "exe_state", "project", "outdir", "port",
 }
+child_identity_keys = {
+    "child_pid", "child_start_ticks", "child_exe",
+    "child_cmdline_sha256", "child_cmdline_normalized_sha256",
+}
 metadata_dir = os.stat(os.path.dirname(IDENTITY_PATH), follow_symlinks=False)
 if (
     not isinstance(identity, dict)
-    or set(identity) != expected_keys
+    or set(identity) not in (expected_keys, expected_keys | child_identity_keys)
     or type(identity["version"]) is not int
     or type(identity["pid"]) is not int
     or type(identity["pgid"]) is not int
     or type(identity["uid"]) is not int
     or type(identity["start_ticks"]) is not int
-    or identity["version"] != 1
+    or identity["version"] not in (1, 2)
+    or (identity["version"] == 1 and set(identity) != expected_keys)
+    or (identity["version"] == 2 and set(identity) != expected_keys | child_identity_keys)
     or identity["pid"] != pid
     or identity["pgid"] != pgid
     or identity["uid"] != os.getuid()
@@ -216,6 +264,15 @@ if (
     or not isinstance(identity["cmdline_sha256"], str)
     or len(identity["cmdline_sha256"]) != 64
     or any(character not in "0123456789abcdef" for character in identity["cmdline_sha256"])
+    or (identity["version"] == 2 and (
+        type(identity["child_pid"]) is not int
+        or identity["child_pid"] <= 0
+        or type(identity["child_start_ticks"]) is not int
+        or identity["child_start_ticks"] <= 0
+        or not isinstance(identity["child_exe"], str)
+        or not os.path.isabs(identity["child_exe"])
+        or any(not isinstance(identity[key], str) or not re.fullmatch(r"[0-9a-f]{64}", identity[key]) for key in ("child_cmdline_sha256", "child_cmdline_normalized_sha256"))
+    ))
     or not stat.S_ISDIR(metadata_dir.st_mode)
     or metadata_dir.st_uid != os.getuid()
     or metadata_dir.st_mode & 0o022
@@ -231,6 +288,13 @@ def leader_matches(task):
         and len(argv) == 1
         and argv[0] == "Apptainer runtime parent: asvflow-dashboard.sif"
     )
+    recorded_runtime = os.path.basename(identity["exe"] or "")
+    verified_exec_transition = (
+        runtime_parent
+        and identity["exe_state"] == "readable"
+        and task["exe_state"] == "readable"
+        and recorded_runtime in ("apptainer", "singularity")
+    )
     return bool(
         task
         and task["state"] not in ("Z", "X")
@@ -238,9 +302,17 @@ def leader_matches(task):
         and task["session"] == pgid
         and task["uid"] == identity["uid"]
         and task["start_ticks"] == identity["start_ticks"]
-        and task["exe_state"] == identity["exe_state"]
-        and task["exe"] == identity["exe"]
-        and hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
+        and (
+            (task["exe_state"] == identity["exe_state"] and task["exe"] == identity["exe"])
+            or verified_exec_transition
+        )
+        # Apptainer rewrites starter's argv to a descriptive process title
+        # after startup. Accept that one exact, identifiable title while the
+        # immutable process and session identity remains verified below.
+        and (
+            hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
+            or runtime_parent
+        )
         and (
             identity["exe_state"] == "inaccessible"
             or executable in ("singularity", "apptainer", "starter")
@@ -257,10 +329,34 @@ def same_process_instance(left, right):
     # not part of process identity. Compare stable fields before pidfd signals.
     if left is None or right is None:
         return False
+    if identity.get("version") == 2 and left.get("pid") == right.get("pid") == identity["child_pid"]:
+        stable_child = ("pid", "ppid", "pgrp", "session", "start_ticks", "uid", "exe", "exe_state")
+        return (
+            all(left.get(key) == right.get(key) for key in stable_child)
+            and is_dashboard_member(left, project, port, outdir, identity["uid"], pgid, identity, True)
+            and is_dashboard_member(right, project, port, outdir, identity["uid"], pgid, identity, True)
+        )
     # The launcher may be reparented after its shell exits; PPID is therefore
     # intentionally excluded while its session and start time remain stable.
-    stable = ("pgrp", "session", "start_ticks", "uid", "exe", "exe_state", "cmdline")
-    return all(left.get(key) == right.get(key) for key in stable)
+    stable = ("pgrp", "session", "start_ticks", "uid", "exe", "exe_state")
+    if not all(left.get(key) == right.get(key) for key in stable):
+        return False
+    if left.get("cmdline") == right.get("cmdline"):
+        return True
+
+    def recognized_launcher_cmdline(task):
+        return (
+            os.path.basename(task.get("exe") or "") == "starter"
+            and (
+                hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
+                or argv_for(task) == ["Apptainer runtime parent: asvflow-dashboard.sif"]
+            )
+        )
+
+    # Permit only Apptainer starter's known post-startup argv replacement.
+    # Tracked Streamlit children use their recorded PID/start/executable and
+    # one of the two recorded command-line forms in the branch above.
+    return recognized_launcher_cmdline(left) and recognized_launcher_cmdline(right)
 
 
 def read_group():
@@ -298,7 +394,7 @@ def read_group():
             if not leader_matches(task):
                 os.close(proc_fd)
                 fail("Launcher identity changed; refusing to signal the process group")
-        elif not is_dashboard_member(task, project, port, outdir, identity["uid"], pgid):
+        elif not is_dashboard_member(task, project, port, outdir, identity["uid"], pgid, identity, identity.get("version") == 2):
             os.close(proc_fd)
             fail(f"Unverified process {task_pid} shares the dashboard process group")
         members.append((task_pid, task, proc_fd))
@@ -314,7 +410,7 @@ def read_group():
         for _, _, proc_fd in members:
             os.close(proc_fd)
         fail("The original launcher is not the process-group leader")
-    return sorted(members, key=lambda member: member[0] == pid)
+    return sorted(members, key=lambda member: member[0] != pid)
 
 
 def close_group(group):
@@ -339,6 +435,8 @@ signal_number = signal.SIGTERM if extra[0] == "TERM" else signal.SIGKILL
 try:
     for target_pid, original_task, proc_fd in group:
         before = read_task(target_pid, proc_fd)
+        if before is None:
+            continue
         if not same_process_instance(before, original_task):
             # A previously signaled child can make its verified container
             # parent exit naturally. Accept only when the whole group is gone.
@@ -360,6 +458,8 @@ try:
             if f"Pid:\t{target_pid}\n" not in fdinfo:
                 fail(f"pidfd does not refer to expected PID {target_pid}")
             current = read_task(target_pid, proc_fd)
+            if current is None:
+                continue
             if not same_process_instance(current, original_task):
                 current_group = read_group()
                 if not current_group:
@@ -374,11 +474,15 @@ try:
                     (member for member in current_group if member[0] == target_pid),
                     None,
                 )
+                if current_member is None and read_task(target_pid, proc_fd) is None:
+                    continue
                 if current_member is None or not same_process_instance(current_member[1], original_task):
                     fail(f"Process {target_pid} is no longer a verified dashboard group member")
             finally:
                 close_group(current_group)
             current = read_task(target_pid, proc_fd)
+            if current is None:
+                continue
             if not same_process_instance(current, original_task):
                 fail(f"Process {target_pid} changed immediately before signaling")
             signal.pidfd_send_signal(pidfd, signal_number)

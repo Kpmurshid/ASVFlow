@@ -114,7 +114,7 @@ def fail(message):
     raise SystemExit(1)
 
 
-def read_task(pid, proc_fd=None):
+def read_task(pid, proc_fd=None, include_environment=False):
     proc = f"/proc/{pid}"
     owned_fd = proc_fd is None
     try:
@@ -137,7 +137,7 @@ def read_task(pid, proc_fd=None):
         uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
         uid = int(uid_line.split()[1])
         cmdline = read_bytes("cmdline")
-        environ = read_bytes("environ")
+        environ = read_bytes("environ") if include_environment else b""
         container_env = {}
         for entry in environ.split(b"\0"):
             key, separator, value = entry.partition(b"=")
@@ -159,6 +159,7 @@ def read_task(pid, proc_fd=None):
             exe_state = "inaccessible"
         return {
             "state": fields[0],
+            "pid": pid,
             "ppid": int(fields[1]),
             "pgrp": int(fields[2]),
             "session": int(fields[3]),
@@ -182,6 +183,24 @@ def argv_for(task):
     if not task or not task["cmdline"]:
         return []
     return [os.fsdecode(arg) for arg in task["cmdline"].split(b"\0") if arg]
+
+
+def normalized_dashboard_cmdline_hash(task, outdir):
+    argv = argv_for(task)
+    if "--outdir" in argv:
+        index = argv.index("--outdir")
+        if index + 1 >= len(argv) or argv[index + 1] != outdir:
+            return None
+        if index >= 1 and argv[index - 1] == "--" and index + 2 == len(argv):
+            normalized = argv[:index - 1]
+        elif index + 2 == len(argv):
+            normalized = argv[:index]
+        else:
+            return None
+        payload = b"\0".join(os.fsencode(argument) for argument in normalized) + b"\0"
+        return hashlib.sha256(payload).hexdigest()
+    payload = b"\0".join(os.fsencode(argument) for argument in argv) + (b"\0" if argv else b"")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def has_dashboard_command(task, project, port, outdir):
@@ -208,14 +227,38 @@ def is_dashboard_executable(task):
     ) is not None
 
 
-def is_dashboard_member(task, project, port, outdir, expected_uid, pgid):
+def is_dashboard_member(task, project, port, outdir, expected_uid, pgid, expected_child=None, allow_missing_outdir=False):
     argv = argv_for(task)
     app = os.path.join(project, "dashboard", "app.py")
     try:
         app_index = argv.index(app)
-        outdir_index = argv.index("--outdir")
     except ValueError:
         return False
+    streamlit_indices = [index for index, argument in enumerate(argv) if os.path.basename(argument) == "streamlit"]
+    if not streamlit_indices or not any(index < app_index and "run" in argv[index + 1:app_index] for index in streamlit_indices):
+        return False
+    if "--outdir" in argv:
+        outdir_index = argv.index("--outdir")
+        if outdir_index + 1 >= len(argv) or argv[outdir_index + 1] != outdir:
+            return False
+    elif not allow_missing_outdir:
+        return False
+    if expected_child is not None and expected_child.get("version") == 2:
+        if (
+            task.get("pid") != expected_child.get("child_pid")
+            or task["start_ticks"] != expected_child.get("child_start_ticks")
+            or task["exe"] != expected_child.get("child_exe")
+        ):
+            return False
+        actual_hashes = (
+            hashlib.sha256(task["cmdline"]).hexdigest(),
+            normalized_dashboard_cmdline_hash(task, outdir),
+        )
+        if not any(actual_hash in (
+            expected_child.get("child_cmdline_sha256"),
+            expected_child.get("child_cmdline_normalized_sha256"),
+        ) for actual_hash in actual_hashes):
+            return False
     return (
         task["uid"] == expected_uid
         and task["ppid"] == pgid
@@ -225,8 +268,48 @@ def is_dashboard_member(task, project, port, outdir, expected_uid, pgid):
         and app_index > 0
         and "run" in argv[:app_index]
         and f"--server.port={port}" in argv
-        and outdir_index + 1 < len(argv)
-        and argv[outdir_index + 1] == outdir
+        and ("--outdir" not in argv or argv.index("--outdir") + 1 < len(argv))
+    )
+
+
+def same_task_snapshot(left, right):
+    """Compare /proc snapshots while ignoring the scheduler's state field."""
+    if left is None or right is None:
+        return False
+    # Container runtimes may scrub their injected environment after exec; it
+    # is checked when classifying the child, while kernel identity and argv
+    # remain stable fields for the repeated snapshot.
+    return all(left.get(key) == right.get(key) for key in left if key not in ("state", "container_env"))
+
+
+def is_verified_launcher(task, project, port, outdir):
+    if not task or task["exe_state"] not in ("readable", "inaccessible"):
+        return False
+    executable = os.path.basename(task["exe"] or "")
+    if task["exe_state"] == "readable" and executable not in ("singularity", "apptainer", "starter"):
+        return False
+    argv = argv_for(task)
+    runtime_parent = (
+        executable == "starter"
+        and argv == ["Apptainer runtime parent: asvflow-dashboard.sif"]
+    )
+    return (
+        ("exec" in argv and has_dashboard_command(task, project, port, outdir))
+        or runtime_parent
+    )
+
+
+def same_dashboard_child_snapshot(left, right, project, port, outdir, expected_uid, pgid):
+    if left is None or right is None:
+        return False
+    stable = ("pid", "ppid", "pgrp", "session", "start_ticks", "uid", "exe", "exe_state")
+    if not all(left.get(key) == right.get(key) for key in stable):
+        return False
+    if normalized_dashboard_cmdline_hash(left, outdir) != normalized_dashboard_cmdline_hash(right, outdir):
+        return False
+    return (
+        is_dashboard_member(left, project, port, outdir, expected_uid, pgid, allow_missing_outdir=True)
+        and is_dashboard_member(right, project, port, outdir, expected_uid, pgid, allow_missing_outdir=True)
     )
 
 
@@ -235,9 +318,9 @@ if not pid_text.isdecimal() or not pgid_text.isdecimal():
     fail("PID and PGID must be decimal integers")
 pid, pgid = int(pid_text), int(pgid_text)
 
-def write_identity(identity_path, task):
+def write_identity(identity_path, task, child_task):
     identity = {
-        "version": 1,
+        "version": 2 if child_task is not None else 1,
         "pid": pid,
         "pgid": pgid,
         "uid": task["uid"],
@@ -250,6 +333,17 @@ def write_identity(identity_path, task):
         "outdir": outdir,
         "port": port,
     }
+    if child_task is not None:
+        normalized_child_hash = normalized_dashboard_cmdline_hash(child_task, outdir)
+        if normalized_child_hash is None:
+            fail("Streamlit child has an unrecognized command-line shape")
+        identity.update({
+            "child_pid": child_task["pid"],
+            "child_start_ticks": child_task["start_ticks"],
+            "child_exe": child_task["exe"],
+            "child_cmdline_sha256": hashlib.sha256(child_task["cmdline"]).hexdigest(),
+            "child_cmdline_normalized_sha256": normalized_child_hash,
+        })
     directory = os.path.dirname(identity_path)
     directory_stat = os.stat(directory, follow_symlinks=False)
     if (
@@ -300,8 +394,7 @@ if action == "create":
                 task["exe_state"] == "inaccessible"
                 or os.path.basename(task["exe"]) in ("singularity", "apptainer", "starter")
             )
-            and "exec" in argv_for(task)
-            and has_dashboard_command(task, project, port, outdir)
+            and is_verified_launcher(task, project, port, outdir)
         ):
             break
         time.sleep(0.05)
@@ -319,8 +412,47 @@ if action == "create":
             fail("Cannot establish launcher identity and session ownership")
 
     if action == "create":
-        write_identity(identity_path, task)
-        raise SystemExit(0)
+        child_deadline = time.monotonic() + 20
+        child_task = None
+        while time.monotonic() < child_deadline:
+            candidates = []
+            for entry in os.scandir("/proc"):
+                if not entry.name.isdecimal() or int(entry.name) == pid:
+                    continue
+                candidate = read_task(int(entry.name))
+                if candidate and candidate["pgrp"] == pgid and candidate["state"] not in ("Z", "X"):
+                    if is_dashboard_member(candidate, project, port, outdir, os.getuid(), pgid, allow_missing_outdir=True):
+                        candidates.append(candidate)
+            if len(candidates) == 1:
+                child_task = candidates[0]
+                break
+            time.sleep(0.1)
+        if child_task is None:
+            current_leader = read_task(pid)
+            stable_launcher = ("pid", "pgrp", "session", "start_ticks", "uid")
+            if (
+                current_leader is not None
+                and all(current_leader.get(key) == task.get(key) for key in stable_launcher)
+                and is_verified_launcher(current_leader, project, port, outdir)
+            ):
+                # Publish parent identity even if child startup failed, so the
+                # caller can use the same verified pidfd shutdown path.
+                write_identity(identity_path, current_leader, None)
+            fail("Cannot establish the expected Streamlit child")
+        else:
+            current_leader = read_task(pid)
+            current_child = read_task(child_task["pid"])
+            stable_launcher = ("pid", "pgrp", "session", "start_ticks", "uid")
+            if (
+                current_leader is None
+                or not all(current_leader.get(key) == task.get(key) for key in stable_launcher)
+                or not is_verified_launcher(current_leader, project, port, outdir)
+            ):
+                fail("Launcher changed while Streamlit ownership was being established")
+            if not same_dashboard_child_snapshot(current_child, child_task, project, port, outdir, os.getuid(), pgid):
+                fail("Streamlit child changed while ownership was being established")
+            write_identity(identity_path, current_leader, child_task)
+            raise SystemExit(0)
 
 if action == "adopt-legacy":
     if len(rest) != 4:
@@ -387,7 +519,7 @@ if action == "adopt-legacy":
         except (OSError, ValueError, IndexError) as error:
             fail(f"Cannot establish process-group membership for {member_pid}: {error}")
         try:
-            task = read_task(member_pid)
+            task = read_task(member_pid, include_environment=True)
         except SystemExit:
             raise
         if task is None or task["pgrp"] != pgid or task["state"] in ("Z", "X"):
@@ -395,7 +527,7 @@ if action == "adopt-legacy":
         if task["session"] != pgid:
             fail(f"Process {member_pid} in the legacy group has an unexpected session")
         if member_pid == pid:
-            if task != leader:
+            if not same_task_snapshot(task, leader):
                 fail("Legacy launcher changed while it was being inspected")
             members.append(task)
             continue
@@ -419,9 +551,7 @@ if action == "adopt-legacy":
             and app in argv
             and "run" in argv[:argv.index(app)]
             and f"--server.port={port}" in argv
-            and outdir_index >= 0
-            and outdir_index + 1 < len(argv)
-            and argv[outdir_index + 1] == outdir
+            and (outdir_index < 0 or (outdir_index + 1 < len(argv) and argv[outdir_index + 1] == outdir))
             and container_paths == {expected_container}
             and task["container_env"].get("APPTAINER_COMMAND", task["container_env"].get("SINGULARITY_COMMAND")) == "exec"
         )
@@ -464,10 +594,12 @@ if action == "adopt-legacy":
         fail(f"Verified dashboard child {dashboard_pid} does not own a LISTEN socket on port {port}")
 
     current = read_task(pid)
-    if current != leader:
+    if not same_task_snapshot(current, leader):
         fail("Legacy launcher changed during verification")
-    if read_task(dashboard_pid) != dashboard_snapshot:
-        fail("Verified dashboard child changed during verification")
+    final_dashboard_snapshot = read_task(dashboard_pid)
+    if not same_dashboard_child_snapshot(final_dashboard_snapshot, dashboard_snapshot, project, port, outdir, leader["uid"], pgid):
+        changed_keys = [key for key in dashboard_snapshot if key != "state" and final_dashboard_snapshot.get(key) != dashboard_snapshot.get(key)] if final_dashboard_snapshot else ["process-disappeared"]
+        fail(f"Verified dashboard child changed during verification: {','.join(changed_keys)}")
     state_dir = os.path.dirname(identity_path)
     state_stat = os.stat(state_dir, follow_symlinks=False)
     if not stat.S_ISDIR(state_stat.st_mode) or state_stat.st_uid != os.getuid():
@@ -480,7 +612,7 @@ if action == "adopt-legacy":
     for metadata_fd in metadata_fds:
         os.fchmod(metadata_fd, 0o600)
         os.close(metadata_fd)
-    write_identity(identity_path, leader)
+    write_identity(identity_path, leader, dashboard_snapshot)
     print("Verified legacy dashboard ownership and atomically wrote identity metadata")
     raise SystemExit(0)
 
@@ -552,16 +684,22 @@ expected_keys = {
     "version", "pid", "pgid", "uid", "boot_id", "start_ticks", "exe",
     "cmdline_sha256", "exe_state", "project", "outdir", "port",
 }
+child_identity_keys = {
+    "child_pid", "child_start_ticks", "child_exe",
+    "child_cmdline_sha256", "child_cmdline_normalized_sha256",
+}
 metadata_dir = os.stat(os.path.dirname(identity_path), follow_symlinks=False)
 if (
     not isinstance(identity, dict)
-    or set(identity) != expected_keys
+    or set(identity) not in (expected_keys, expected_keys | child_identity_keys)
     or type(identity["version"]) is not int
     or type(identity["pid"]) is not int
     or type(identity["pgid"]) is not int
     or type(identity["uid"]) is not int
     or type(identity["start_ticks"]) is not int
-    or identity["version"] != 1
+    or identity["version"] not in (1, 2)
+    or (identity["version"] == 1 and set(identity) != expected_keys)
+    or (identity["version"] == 2 and set(identity) != expected_keys | child_identity_keys)
     or identity["pid"] != pid
     or identity["pgid"] != pgid
     or identity["uid"] != os.getuid()
@@ -579,6 +717,15 @@ if (
     or not isinstance(identity["cmdline_sha256"], str)
     or len(identity["cmdline_sha256"]) != 64
     or any(character not in "0123456789abcdef" for character in identity["cmdline_sha256"])
+    or (identity["version"] == 2 and (
+        type(identity["child_pid"]) is not int
+        or identity["child_pid"] <= 0
+        or type(identity["child_start_ticks"]) is not int
+        or identity["child_start_ticks"] <= 0
+        or not isinstance(identity["child_exe"], str)
+        or not os.path.isabs(identity["child_exe"])
+        or any(not isinstance(identity[key], str) or not re.fullmatch(r"[0-9a-f]{64}", identity[key]) for key in ("child_cmdline_sha256", "child_cmdline_normalized_sha256"))
+    ))
     or not stat.S_ISDIR(metadata_dir.st_mode)
     or metadata_dir.st_uid != os.getuid()
     or metadata_dir.st_mode & 0o022
@@ -616,6 +763,14 @@ def leader_matches(task):
         and len(argv) == 1
         and argv[0] == "Apptainer runtime parent: asvflow-dashboard.sif"
     )
+    recorded_runtime = os.path.basename(identity["exe"] or "")
+    verified_exec_transition = (
+        runtime_parent
+        and identity["exe_state"] == "readable"
+        and task["exe_state"] == "readable"
+        and recorded_runtime in ("apptainer", "singularity")
+    )
+    mutable_starter_title = runtime_parent
     return bool(
         task
         and task["state"] not in ("Z", "X")
@@ -623,18 +778,56 @@ def leader_matches(task):
         and task["session"] == pgid
         and task["uid"] == identity["uid"]
         and task["start_ticks"] == identity["start_ticks"]
-        and task["exe_state"] == identity["exe_state"]
-        and task["exe"] == identity["exe"]
-        and hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
+        and (
+            (task["exe_state"] == identity["exe_state"] and task["exe"] == identity["exe"])
+            or verified_exec_transition
+        )
+        # Apptainer rewrites starter's argv to a descriptive process title
+        # after startup. Accept that one exact, identifiable title while the
+        # immutable process and session identity remains verified below.
+        and (
+            hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
+            or mutable_starter_title
+        )
         and (
             identity["exe_state"] == "inaccessible"
             or executable in ("singularity", "apptainer", "starter")
         )
         and (
             ("exec" in argv and has_dashboard_command(task, project, port, outdir))
-            or runtime_parent
+            or mutable_starter_title
         )
     )
+
+
+def same_process_instance(left, right):
+    if left is None or right is None:
+        return False
+    if identity.get("version") == 2 and left.get("pid") == right.get("pid") == identity["child_pid"]:
+        stable_child = ("pid", "ppid", "pgrp", "session", "start_ticks", "uid", "exe", "exe_state")
+        return (
+            all(left.get(key) == right.get(key) for key in stable_child)
+            and is_dashboard_member(left, project, port, outdir, identity["uid"], pgid, identity, True)
+            and is_dashboard_member(right, project, port, outdir, identity["uid"], pgid, identity, True)
+        )
+    stable = ("pgrp", "session", "start_ticks", "uid", "exe", "exe_state")
+    if not all(left.get(key) == right.get(key) for key in stable):
+        return False
+    if left.get("cmdline") == right.get("cmdline"):
+        return True
+
+    def recognized_launcher_cmdline(task):
+        return (
+            os.path.basename(task.get("exe") or "") == "starter"
+            and (
+                hashlib.sha256(task["cmdline"]).hexdigest() == identity["cmdline_sha256"]
+                or argv_for(task) == ["Apptainer runtime parent: asvflow-dashboard.sif"]
+            )
+        )
+
+    # Apptainer can replace starter's argv with this exact title after launch.
+    # All other command-line changes, and all child changes, remain rejected.
+    return recognized_launcher_cmdline(left) and recognized_launcher_cmdline(right)
 
 
 def read_group():
@@ -672,7 +865,7 @@ def read_group():
             if not leader_matches(task):
                 os.close(proc_fd)
                 fail("Launcher identity changed; refusing to signal the process group")
-        elif not is_dashboard_member(task, project, port, outdir, identity["uid"], pgid):
+        elif not is_dashboard_member(task, project, port, outdir, identity["uid"], pgid, identity, identity.get("version") == 2):
             os.close(proc_fd)
             fail(f"Unverified process {task_pid} shares the dashboard process group")
         members.append((task_pid, task, proc_fd))
@@ -690,7 +883,9 @@ def read_group():
         for _, _, proc_fd in members:
             os.close(proc_fd)
         fail("The original launcher is not the process-group leader")
-    return sorted(members, key=lambda member: member[0] == pid)
+    # Signal the verified launcher first so its own graceful handler can stop
+    # the child without making the leader disappear during child verification.
+    return sorted(members, key=lambda member: member[0] != pid)
 
 
 def close_group(group):
@@ -717,7 +912,11 @@ signal_number = signal.SIGTERM if extra[0] == "TERM" else signal.SIGKILL
 try:
     for target_pid, original_task, proc_fd in group:
         before = read_task(target_pid, proc_fd)
-        if before is None or before != original_task:
+        if before is None:
+            # A verified child may exit naturally after the launcher receives
+            # TERM; an absent PID has no target to signal.
+            continue
+        if not same_process_instance(before, original_task):
             fail(f"Process {target_pid} changed before pidfd_open")
         try:
             pidfd = os.pidfd_open(target_pid)
@@ -728,7 +927,9 @@ try:
             if f"Pid:\t{target_pid}\n" not in fdinfo:
                 fail(f"pidfd does not refer to expected PID {target_pid}")
             current = read_task(target_pid, proc_fd)
-            if current is None or current != original_task:
+            if current is None:
+                continue
+            if not same_process_instance(current, original_task):
                 fail(f"pidfd target {target_pid} does not match the verified process instance")
             current_group = read_group()
             if not current_group:
@@ -738,12 +939,16 @@ try:
                     (member for member in current_group if member[0] == target_pid),
                     None,
                 )
-                if current_member is None or current_member[1] != original_task:
+                if current_member is None and read_task(target_pid, proc_fd) is None:
+                    continue
+                if current_member is None or not same_process_instance(current_member[1], original_task):
                     fail(f"Process {target_pid} is no longer a verified dashboard group member")
             finally:
                 close_group(current_group)
             current = read_task(target_pid, proc_fd)
-            if current is None or current != original_task:
+            if current is None:
+                continue
+            if not same_process_instance(current, original_task):
                 fail(f"Process {target_pid} changed immediately before signaling")
             signal.pidfd_send_signal(pidfd, signal_number)
         finally:
@@ -1001,7 +1206,9 @@ if [ -f "${PID_FILE}" ] && [ -f "${PORT_FILE}" ]; then
     # First check if the process group is still alive
     elif kill -0 "${OLD_PID}" 2>/dev/null; then
         # Process exists, verify it's our dashboard
-        if is_dashboard_running "${OLD_PID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}"; then
+        # Use the same complete PID/UID/start-time/executable/session/group and
+        # Streamlit-child validation used by shutdown before reusing/restarting.
+        if dashboard_process_helper inspect "${OLD_PID}" "${OLD_PGID}" "${OLD_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS_CHECK}" "${IDENTITY_FILE}"; then
             # Dashboard is running and verified - check if configuration matches
             CONFIG_MATCHES=true
             CONFIG_DIFF=""
@@ -1214,15 +1421,22 @@ echo "${OUTDIR_ABS}" > "${OUTDIR_FILE}"
 echo "${DASHBOARD_BIND_ADDRESS}" > "${BIND_ADDRESS_FILE}"
 if ! dashboard_process_helper create "${DASHBOARD_PID}" "${DASHBOARD_PGID}" "${ACTUAL_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}" "${DASHBOARD_SIF_ABS}" "${PROJECT_FILE}" "${OUTDIR_FILE}"; then
     log_error "Could not establish stable process ownership metadata."
-    # The runtime may have failed before creating a container. Remove only
-    # bookkeeping for an absent/zombie launcher and a confirmed free port.
-    # A live or unverifiable process is left untouched with its state intact.
-    LAUNCHER_STATE="$(ps -o stat= -p "${DASHBOARD_PID}" 2>/dev/null | tr -d ' ' || true)"
-    if { [ -z "${LAUNCHER_STATE}" ] || [[ "${LAUNCHER_STATE}" == Z* || "${LAUNCHER_STATE}" == X* ]]; } && check_port_free_verified "${ACTUAL_PORT}"; then
-        rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}" "${BIND_ADDRESS_FILE}" "${IDENTITY_FILE}"
-        log_warning "Removed state for the failed, inactive launch."
+    if [ -f "${IDENTITY_FILE}" ]; then
+        if dashboard_process_helper inspect "${DASHBOARD_PID}" "${DASHBOARD_PGID}" "${ACTUAL_PORT}" "${PROJECT_DIR}" "${OUTDIR_ABS}" "${IDENTITY_FILE}"; then
+            log_warning "Stopping the failed launch through verified process ownership."
+            if ! stop_verified_dashboard "${DASHBOARD_PID}" "${DASHBOARD_PGID}" "${ACTUAL_PORT}"; then
+                log_error "Verified startup cleanup did not complete; state files are preserved."
+            fi
+        else
+            HELPER_STATUS=$?
+            if [ "${HELPER_STATUS}" -eq 2 ] && check_port_free_verified "${ACTUAL_PORT}"; then
+                rm -f "${PID_FILE}" "${PORT_FILE}" "${PGID_FILE}" "${PROJECT_FILE}" "${OUTDIR_FILE}" "${BIND_ADDRESS_FILE}" "${IDENTITY_FILE}"
+            else
+                log_error "Ownership could not be verified; state files are preserved and no process was signaled."
+            fi
+        fi
     else
-        log_error "No processes were signaled; state files are preserved for manual recovery."
+        log_error "Identity metadata was not established; state files are preserved and no process was signaled."
     fi
     exit 1
 fi
