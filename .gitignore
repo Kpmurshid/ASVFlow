@@ -53,36 +53,10 @@ Thumbs.db
 
 # Reference databases
 databases/
-/skills/
 
-# Test outputs and validation
-test_output/
-validation_*/
-work_*/
-
-# Temporary project documentation
-*_REPORT.md
-*_SUMMARY.txt
-*_SUMMARY.md
-*_AUDIT*.md
-*_AUDIT*.txt
-*_VALIDATION*.md
-*_VALIDATION*.txt
-DESIGN_*.md
-DESIGN_*.md.backup
-DESIGN_*.md.original
-IMPLEMENTATION_*.md
-PART4_*.md
-PHASE*.md
-PHASE*.txt
-FINAL_*.txt
 
 # Dashboard runtime state
 .asvflow_dashboard/
 .streamlit/
 !.streamlit/
 !.streamlit/config.toml
-
-# Additional test/temporary directories
-audit_test_*/
-test_dashboard_phase*/
